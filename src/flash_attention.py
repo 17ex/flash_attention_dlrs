@@ -54,7 +54,10 @@ def flash_attention_forward(
             N,
             d,
             B_c,
-            B_r
+            B_r,
+            (B_c, d),
+            (B_r, d),
+            (B_r, )
             )
 
     # TODO store l, m? For now, just return
@@ -74,6 +77,9 @@ def forward_kernel(
         d,
         B_c,
         B_r,
+        KV_block_shape,
+        OQ_block_shape,
+        statistics_vec_shape
         ):
 
     j = tl.program_id(axis=0)
@@ -83,14 +89,14 @@ def forward_kernel(
             (N, d),
             K_stride,
             (j * B_c, 0),
-            (B_c, d),
+            KV_block_shape,
             K_order) # What exactly is order?
     V_j_ptr = tl.make_block_ptr(
             V_ptr,
             (N, d),
             V_stride,
             (j * B_c, 0),
-            (B_c, d),
+            KV_block_shape,
             V_order)
 
     forward_outer(
@@ -103,9 +109,10 @@ def forward_kernel(
             T_r,
             N,
             d,
-            B_c,
             B_r,
-            j)
+            OQ_block_shape,
+            statistics_vec_shape
+            )
 
 
 @triton.jit
@@ -120,6 +127,8 @@ def forward_outer(
         N,
         d,
         B_r,
+        OQ_block_shape,
+        statistics_vec_shape
         ):
 
     # L: 6
@@ -139,28 +148,28 @@ def forward_outer(
                 (N, d),
                 Q_stride,
                 (i * B_r, 0),
-                (B_r, d),
+                OQ_block_shape,
                 Q_order)
         O_i_ptr = tl.make_block_ptr(
                 O_ptr,
                 (N, d),
                 O_stride,
                 (i * B_r, 0),
-                (B_r, d),
+                OQ_block_shape,
                 O_order)
         l_i_ptr = tl.make_block_ptr(
                 l_ptr,
                 (N, ),
                 l_stride,
                 (i * B_r, ),
-                (B_r, ),
+                statistics_vec_shape,
                 l_order)
         m_i_ptr = tl.make_block_ptr(
                 m_ptr,
                 (N, ),
                 m_stride,
                 (i * B_r, ),
-                (B_r, ),
+                statistics_vec_shape,
                 m_order)
 
         forward_inner(
