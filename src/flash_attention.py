@@ -5,6 +5,9 @@ import triton.language as tl
 
 FP32_BYTESIZE = 4 # TODO future: accomodate other types than float32.
 
+def cdiv(a: int, b: int) -> int:
+    return (a + b - 1) // b
+
 def flash_attention_forward(
         Q,
         K,
@@ -16,15 +19,15 @@ def flash_attention_forward(
 
     # L: 1 (Determine block sizes)
     rows_bytesize = FP32_BYTESIZE * d # Assuming FP32
-    B_c = tl.cdiv(M, rows_bytesize)
-    B_r = tl.min(B_c, d)
-    T_r = tl.cdiv(N, B_r)
-    T_c = tl.cdiv(N, B_c)
+    B_c = cdiv(M, rows_bytesize)
+    B_r = min(B_c, d)
+    T_r = cdiv(N, B_r)
+    T_c = cdiv(N, B_c)
 
     # L: 2 (Initialize output and statistics)
-    O = tl.zeros_like(Q)
-    l = tl.zeros(N)
-    m = tl.full((N, ), -np.inf, tl.float32)
+    O = torch.zeros_like(Q)
+    l = torch.zeros(N)
+    m = torch.full((N, ), -np.inf, dtype=torch.float32)
 
     # Check if below can be used like this:
     Q_ptr = Q.data_ptr() # TODO is this correct? data_ptr or does Q as tensor work?
