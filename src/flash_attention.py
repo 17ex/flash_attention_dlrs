@@ -3,10 +3,8 @@ import torch
 import triton
 import triton.language as tl
 
-FP32_BYTESIZE = 4
+FP32_BYTESIZE = 4 # TODO future: accomodate other types than float32.
 
-# TODO this is garbage.
-@triton.jit
 def flash_attention_forward(
         Q,
         K,
@@ -16,17 +14,54 @@ def flash_attention_forward(
         M: tl.constexpr # SRAM size
         ):
 
-    # Determine block sizes
+    # L: 1 (Determine block sizes)
     rows_bytesize = FP32_BYTESIZE * d # Assuming FP32
     B_c = tl.cdiv(M, rows_bytesize)
     B_r = tl.min(B_c, d)
     T_r = tl.cdiv(N, B_r)
     T_c = tl.cdiv(N, B_c)
 
-    # Initialize values
+    # L: 2 (Initialize output and statistics)
     O = tl.zeros_like(Q)
     l = tl.zeros(N)
     m = tl.full((N, ), -np.inf, tl.float32)
+
+    # Check if below can be used like this:
+    Q_ptr = Q.data_ptr() # TODO is this correct? data_ptr or does Q as tensor work?
+    Q_stride = Q.stride()
+    Q_order = Q.dim_order()
+    K_ptr = K.data_ptr() # TODO is this correct? data_ptr or does Q as tensor work?
+    K_stride = K.stride()
+    K_order = K.dim_order() # TODO apparently K.T.dim_order() is just swapped -> swap instead of transpose op?
+    V_ptr = V.data_ptr() # TODO is this correct? data_ptr or does Q as tensor work?
+    V_stride = V.stride()
+    V_order = V.dim_order()
+    O_ptr = O.data_ptr() # TODO is this correct? data_ptr or does Q as tensor work?
+    O_stride = O.stride()
+    O_order = O.dim_order()
+    m_ptr = m.data_ptr() # TODO is this correct? data_ptr or does Q as tensor work?
+    m_stride = m.stride()
+    m_order = m.dim_order()
+    l_ptr = l.data_ptr() # TODO is this correct? data_ptr or does Q as tensor work?
+    l_stride = l.stride()
+    l_order = l.dim_order()
+
+    forward_kernel[(T_c, )](
+            Q_ptr, Q_stride, Q_order,
+            O_ptr, O_stride, O_order,
+            l_ptr, l_stride, l_order,
+            m_ptr, m_stride, m_order,
+            K_ptr, K_stride, K_order,
+            V_ptr, V_stride, V_order,
+            T_r,
+            N,
+            d,
+            B_c,
+            B_r
+            )
+
+    # TODO store l, m? For now, just return
+    return O, l, m
 
 
 @triton.jit
@@ -100,6 +135,8 @@ def forward_outer(
     for i in range(T_r):
 
         # make *_i_ptrs for the blocks that are loaded in forward_inner
+        # TODO
+        # maybe use advance? -> only call make_block_ptr once, then advance
         Q_i_ptr = tl.make_block_ptr(
                 Q_ptr,
                 (N, d),
