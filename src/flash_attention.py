@@ -30,32 +30,26 @@ def flash_attention_forward(
     m = torch.full((N, ), -np.inf, dtype=torch.float32)
 
     # Check if below can be used like this:
-    Q_ptr = Q.data_ptr() # TODO is this correct? data_ptr or does Q as tensor work?
     Q_stride = Q.stride()
     Q_order = Q.dim_order()
-    K_ptr = K.data_ptr() # TODO is this correct? data_ptr or does Q as tensor work?
     K_stride = K.stride()
     K_order = K.dim_order() # TODO apparently K.T.dim_order() is just swapped -> swap instead of transpose op?
-    V_ptr = V.data_ptr() # TODO is this correct? data_ptr or does Q as tensor work?
     V_stride = V.stride()
     V_order = V.dim_order()
-    O_ptr = O.data_ptr() # TODO is this correct? data_ptr or does Q as tensor work?
     O_stride = O.stride()
     O_order = O.dim_order()
-    m_ptr = m.data_ptr() # TODO is this correct? data_ptr or does Q as tensor work?
     m_stride = m.stride()
     m_order = m.dim_order()
-    l_ptr = l.data_ptr() # TODO is this correct? data_ptr or does Q as tensor work?
     l_stride = l.stride()
     l_order = l.dim_order()
 
     forward_kernel[(T_c, )](
-            Q_ptr, Q_stride, Q_order,
-            O_ptr, O_stride, O_order,
-            l_ptr, l_stride, l_order,
-            m_ptr, m_stride, m_order,
-            K_ptr, K_stride, K_order,
-            V_ptr, V_stride, V_order,
+            Q, Q_stride, Q_order,
+            O, O_stride, O_order,
+            l, l_stride, l_order,
+            m, m_stride, m_order,
+            K, K_stride, K_order,
+            V, V_stride, V_order,
             T_r,
             N,
             d,
