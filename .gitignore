@@ -5,3 +5,6 @@
 *.fls
 *.log
 *.synctex.gz
+
+# Python stuff
+__pycache__
