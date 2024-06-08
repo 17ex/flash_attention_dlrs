@@ -3,6 +3,8 @@ import torch
 import triton
 import triton.language as tl
 
+FP32_BYTESIZE = 4
+
 # TODO this is garbage.
 @triton.jit
 def flash_attention_forward(
@@ -15,7 +17,7 @@ def flash_attention_forward(
         ):
 
     # Determine block sizes
-    rows_bytesize = 4 * d
+    rows_bytesize = FP32_BYTESIZE * d # Assuming FP32
     B_c = tl.cdiv(M, rows_bytesize)
     B_r = tl.min(B_c, d)
     T_r = tl.cdiv(N, B_r)
@@ -33,31 +35,45 @@ def forward_kernel(
         O_ptr, O_stride, O_order,
         l_ptr, l_stride, l_order, # TODO l, m params can probably be omitted/set constant
         m_ptr, m_stride, m_order,
-        K_ptr,
-        V_ptr,
+        K_ptr, K_stride, K_order,
+        V_ptr, V_stride, V_order,
         T_r,
         N,
         d,
         B_c,
         B_r,
         ):
-    # TODO determine program id, vars, etc.
 
-    # TODO block pointer / load K/V_j
+    j = tl.program_id(axis=0)
+
     K_j_ptr = tl.make_block_ptr(
             K_ptr,
             (N, d),
-            K_strides,
-            (), # TODO offset. This is the hard one
+            K_stride,
+            (j * B_c, 0),
             (B_c, d),
-            () # What is order?
+            K_order) # What exactly is order?
+    V_j_ptr = tl.make_block_ptr(
+            V_ptr,
+            (N, d),
+            V_stride,
+            (j * B_c, 0),
+            (B_c, d),
+            V_order)
 
-
-            # TODO different order -> don't need tl.trans ?
-            )
-
-    # TODO l, m need to be stored for the backward pass
-
+    forward_outer(
+            Q_ptr, Q_stride, Q_order,
+            O_ptr, O_stride, O_order,
+            l_ptr, l_stride, l_order, # | TODO l, m params can probably be omitted/set constant
+            m_ptr, m_stride, m_order, # |
+            K_j_ptr,
+            V_j_ptr,
+            T_r,
+            N,
+            d,
+            B_c,
+            B_r,
+            j)
 
 
 @triton.jit
@@ -71,9 +87,7 @@ def forward_outer(
         T_r,
         N,
         d,
-        B_c,
         B_r,
-        j
         ):
 
     # L: 6
@@ -81,6 +95,7 @@ def forward_outer(
     V_j = tl.load(V_j_ptr) # |
 
     # TODO staging (num_stages)
+    # Look into what staging was again, forgot what I meant by this
     # L: 7
     for i in range(T_r):
 
@@ -138,10 +153,10 @@ def forward_inner(
     # It takes as arguments all of the correctly set block pointers
 
     # L: 8 (Load to SRAM)
-    Q_i = tl.load(Q_i_ptr) # TODO padding_option or boundary-check
-    O_i = tl.load(O_i_ptr)
-    l_i = tl.load(l_i_ptr)
-    m_i = tl.load(l_i_ptr)
+    Q_i = tl.load(Q_i_ptr) # | TODO padding_option or boundary-check
+    O_i = tl.load(O_i_ptr) # |
+    l_i = tl.load(l_i_ptr) # |
+    m_i = tl.load(l_i_ptr) # |
 
     # L: 9
     S_ij = tl.dot(Q_i, K_jT)
