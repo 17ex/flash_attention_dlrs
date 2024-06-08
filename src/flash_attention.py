@@ -29,10 +29,10 @@ def flash_attention_forward(
 
 @triton.jit
 def forward_kernel(
-        Q_ptr, Q_shape, Q_stride, Q_order,
-        O_ptr, O_shape, O_stride, O_order,
-        l_ptr, l_shape, l_stride, l_order, # TODO l, m params can probably be omitted/set constant
-        m_ptr, m_shape, m_stride, m_order,
+        Q_ptr, Q_stride, Q_order,
+        O_ptr, O_stride, O_order,
+        l_ptr, l_stride, l_order, # TODO l, m params can probably be omitted/set constant
+        m_ptr, m_stride, m_order,
         K_ptr,
         V_ptr,
         T_r,
@@ -47,7 +47,7 @@ def forward_kernel(
     K_j_ptr = tl.make_block_ptr(
             K_ptr,
             (N, d),
-            (1, 1), # TODO deal with strides later on
+            K_strides,
             (), # TODO offset. This is the hard one
             (B_c, d),
             () # What is order?
@@ -62,10 +62,10 @@ def forward_kernel(
 
 @triton.jit
 def forward_outer(
-        Q_ptr, Q_shape, Q_stride, Q_order,
-        O_ptr, O_shape, O_stride, O_order,
-        l_ptr, l_shape, l_stride, l_order, # | TODO l, m params can probably be omitted/set constant
-        m_ptr, m_shape, m_stride, m_order, # |
+        Q_ptr, Q_stride, Q_order,
+        O_ptr, O_stride, O_order,
+        l_ptr, l_stride, l_order, # | TODO l, m params can probably be omitted/set constant
+        m_ptr, m_stride, m_order, # |
         K_j_ptr,
         V_j_ptr,
         T_r,
@@ -87,28 +87,28 @@ def forward_outer(
         # make *_i_ptrs for the blocks that are loaded in forward_inner
         Q_i_ptr = tl.make_block_ptr(
                 Q_ptr,
-                Q_shape,
+                (N, d),
                 Q_stride,
                 (i * B_r, 0),
                 (B_r, d),
                 Q_order)
         O_i_ptr = tl.make_block_ptr(
                 O_ptr,
-                O_shape,
+                (N, d),
                 O_stride,
                 (i * B_r, 0),
                 (B_r, d),
                 O_order)
         l_i_ptr = tl.make_block_ptr(
                 l_ptr,
-                l_shape,
+                (N, ),
                 l_stride,
                 (i * B_r, ),
                 (B_r, ),
                 l_order)
         m_i_ptr = tl.make_block_ptr(
                 m_ptr,
-                m_shape,
+                (N, ),
                 m_stride,
                 (i * B_r, ),
                 (B_r, ),
