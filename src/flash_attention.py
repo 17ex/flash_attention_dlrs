@@ -5,7 +5,7 @@ import triton.language as tl
 
 FP32_BYTESIZE = 4 # TODO future: accomodate other types than float32.
 
-def cdiv(a: int, b: int) -> int:
+def cdiv(a, b):
     return (a + b - 1) // b
 
 def flash_attention_forward(
@@ -203,7 +203,7 @@ def forward_inner(
     l_i = tl.load(l_i_ptr) # |
     m_i = tl.load(l_i_ptr) # |
 
-    # L: 9
+    # L: 9 (Q_i * K_j^T)
     S_ij = tl.dot(Q_i, K_jT)
 
     # L: 10 (~ Softmax for this block)
