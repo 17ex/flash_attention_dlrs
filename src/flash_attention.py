@@ -282,6 +282,8 @@ def flash_attention_backward(
     dK_order = dK.dim_order()
     dV_stride = dV.stride()
     dV_order = dV.dim_order()
+    dO_stride = dO.stride()
+    dO_order = dO.dim_order()
 
     backward_kernel[(T_c, )](
         Q, Q_stride, Q_order,
@@ -293,6 +295,7 @@ def flash_attention_backward(
         dQ, dQ_stride, dQ_order,
         dK, dK_stride, dK_order,
         dV, dV_stride, dV_order,
+        dO, dO_stride, dO_order,
         T_r,
         N,
         d,
@@ -318,6 +321,7 @@ def backward_kernel(
         dQ_ptr, dQ_stride, dQ_order,
         dK_ptr, dK_stride, dK_order,
         dV_ptr, dV_stride, dV_order,
+        dO_ptr, dO_stride, dO_order,
         T_r,
         N,
         d,
@@ -327,4 +331,177 @@ def backward_kernel(
         OQ_block_shape,
         lm_vec_shape
         ):
-    return None
+
+    j = tl.program_id(axis=0)
+
+    # L: 7 (Load K_j, V_j)
+    K_j_ptr = tl.make_block_ptr(
+            K_ptr,
+            (N, d),
+            K_stride,
+            (j * B_c, 0),
+            KV_block_shape,
+            K_order)
+    V_j_ptr = tl.make_block_ptr(
+            V_ptr,
+            (N, d),
+            V_stride,
+            (j * B_c, 0),
+            KV_block_shape,
+            V_order)
+
+    K_j = tl.load(K_j_ptr)
+    V_j = tl.load(V_j_ptr)
+
+    # L: 8 (Init. ~dK_j, ~dV_j)
+    dK_j_s = tl.zeros(KV_block_shape)
+    dV_j_s = tl.zeros(KV_block_shape)
+
+    backward_outer(
+        Q_ptr, Q_stride, Q_order,
+        O_ptr, O_stride, O_order,
+        l_ptr, l_stride, l_order, # TODO l, m params can probably be omitted/set constant
+        m_ptr, m_stride, m_order,
+        K_j,
+        V_j,
+        dK_j_s,
+        dV_j_s,
+        dQ_ptr, dQ_stride, dQ_order,
+        dO_ptr, dO_stride, dO_order,
+        T_r,
+        N,
+        d,
+        B_r,
+        OQ_block_shape,
+        lm_vec_shape
+            )
+
+
+@triton.jit
+def backward_outer(
+        Q_ptr, Q_stride, Q_order,
+        O_ptr, O_stride, O_order,
+        l_ptr, l_stride, l_order, # TODO l, m params can probably be omitted/set constant
+        m_ptr, m_stride, m_order,
+        K_j,
+        V_j,
+        dK_j_s,
+        dV_j_s,
+        dQ_ptr, dQ_stride, dQ_order,
+        dO_ptr, dO_stride, dO_order,
+        T_r,
+        N,
+        d,
+        B_r,
+        OQ_block_shape,
+        lm_vec_shape
+        ):
+
+    for i in range(T_r):
+
+        Q_i_ptr = tl.make_block_ptr(
+                Q_ptr,
+                (N, d),
+                Q_stride,
+                (i * B_r, 0),
+                OQ_block_shape,
+                Q_order)
+        dQ_i_ptr = tl.make_block_ptr(
+                dQ_ptr,
+                (N, d),
+                dQ_stride,
+                (i * B_r, 0),
+                OQ_block_shape,
+                dQ_order)
+        O_i_ptr = tl.make_block_ptr(
+                O_ptr,
+                (N, d),
+                O_stride,
+                (i * B_r, 0),
+                OQ_block_shape,
+                O_order)
+        dO_i_ptr = tl.make_block_ptr(
+                dO_ptr,
+                (N, d),
+                dO_stride,
+                (i * B_r, 0),
+                OQ_block_shape,
+                dO_order)
+        l_i_ptr = tl.make_block_ptr(
+                l_ptr,
+                (N, ),
+                l_stride,
+                (i * B_r, ),
+                lm_vec_shape,
+                l_order)
+        m_i_ptr = tl.make_block_ptr(
+                m_ptr,
+                (N, ),
+                m_stride,
+                (i * B_r, ),
+                lm_vec_shape,
+                m_order)
+
+        backward_inner(
+            Q_i_ptr,
+            K_j,
+            V_j,
+            O_i_ptr,
+            l_i_ptr,
+            m_i_ptr,
+            dQ_i_ptr,
+            dK_j_s,
+            dV_j_s,
+            dO_i_ptr
+                )
+    return
+
+
+
+@triton.jit
+def backward_inner(
+            Q_i_ptr,
+            K_j,
+            V_j,
+            O_i_ptr,
+            l_i_ptr,
+            m_i_ptr,
+            dQ_i_ptr,
+            dK_j_s,
+            dV_j_s,
+            dO_i_ptr
+        ):
+
+    # L: 10 (Load blocks)
+    Q_i = tl.load(Q_i_ptr)
+    O_i = tl.load(O_i_ptr)
+    l_i = tl.load(l_i_ptr)
+    m_i = tl.load(m_i_ptr)
+    dQ_i = tl.load(dQ_i_ptr)
+    dO_i = tl.load(dO_i_ptr)
+
+    # L: 11
+    S_ij = tl.dot(Q_i, tl.trans(K_j))
+
+    # L: 13
+    P_ij = (1 / l_i) * tl.exp(S_ij - m_i) # TODO this should work? l_i scalar
+
+    # L: 16
+    dV_j_s = dV_j_s + tl.dot(tl.trans(P_ij), dO_i)
+
+    # L: 17/18
+    dP_ij = tl.dot(dO_i, tl.trans(V_j))
+
+    # L: 19
+    D_i = tl.sum(dO_i * O_i, axis=1) # TODO verify if * works for element-wise prod (most likely correct)
+
+    # L: 20
+    dS_ij = P_ij * (dP_ij - D_i)
+
+    # L: 21
+    tl.store(dQ_i_ptr, dQ_i + tl.dot(dS_ij, K_j))
+
+    # L: 22
+    dK_j_s = dK_j_s + tl.dot(tl.trans(dS_ij), Q_i)
+
+    return
