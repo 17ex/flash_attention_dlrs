@@ -17,6 +17,8 @@ def flash_attention_forward(
         M: tl.constexpr # SRAM size
         ):
 
+    # TODO
+    # When writing a module, these can be changed into module properties
     # L: 1 (Determine block sizes)
     rows_bytesize = FP32_BYTESIZE * d # Assuming FP32
     B_c = cdiv(M, rows_bytesize)
@@ -90,7 +92,7 @@ def forward_kernel(
             K_stride,
             (j * B_c, 0),
             KV_block_shape,
-            K_order) # What exactly is order?
+            K_order)
     V_j_ptr = tl.make_block_ptr(
             V_ptr,
             (N, d),
@@ -229,3 +231,100 @@ def forward_inner(
     return None
 
 
+
+# Backward pass
+# =============
+# Implementing Algorithm 4 of the Flash Attention v1 paper (Appendix B.4)
+
+
+def flash_attention_backward(
+        Q,
+        K,
+        V,
+        O,
+        dO,
+        l,
+        m,
+        N, # Number of rows of Q,K,V
+        d, # Number of columns of Q,K,V
+        M: tl.constexpr # SRAM size
+        ):
+
+    # TODO
+    # When writing a module, these can be changed into module properties
+    # L: 2-3 (Determine block sizes)
+    rows_bytesize = FP32_BYTESIZE * d # Assuming FP32
+    B_c = cdiv(M, rows_bytesize)
+    B_r = min(B_c, d)
+    T_r = cdiv(N, B_r)
+    T_c = cdiv(N, B_c)
+
+    # L: 5
+    dQ = torch.zeros(N, d)
+    dK = torch.zeros(N, d)
+    dV = torch.zeros(N, d)
+
+    Q_stride = Q.stride()
+    Q_order = Q.dim_order()
+    K_stride = K.stride()
+    K_order = K.dim_order()
+    V_stride = V.stride()
+    V_order = V.dim_order()
+    O_stride = O.stride()
+    O_order = O.dim_order()
+    m_stride = m.stride()
+    m_order = m.dim_order()
+    l_stride = l.stride()
+    l_order = l.dim_order()
+    dQ_stride = dQ.stride()
+    dQ_order = dQ.dim_order()
+    dK_stride = dK.stride()
+    dK_order = dK.dim_order()
+    dV_stride = dV.stride()
+    dV_order = dV.dim_order()
+
+    backward_kernel[(T_c, )](
+        Q, Q_stride, Q_order,
+        O, O_stride, O_order,
+        l, l_stride, l_order, # TODO l, m params can probably be omitted/set constant
+        m, m_stride, m_order,
+        K, K_stride, K_order,
+        V, V_stride, V_order,
+        dQ, dQ_stride, dQ_order,
+        dK, dK_stride, dK_order,
+        dV, dV_stride, dV_order,
+        T_r,
+        N,
+        d,
+        B_c,
+        B_r,
+        (B_c, d),
+        (B_r, d),
+        (B_r, )
+        )
+
+    # L: 26
+    return dQ, dK, dV
+
+
+@triton.jit
+def backward_kernel(
+        Q_ptr, Q_stride, Q_order,
+        O_ptr, O_stride, O_order,
+        l_ptr, l_stride, l_order, # TODO l, m params can probably be omitted/set constant
+        m_ptr, m_stride, m_order,
+        K_ptr, K_stride, K_order,
+        V_ptr, V_stride, V_order,
+        dQ_ptr, dQ_stride, dQ_order,
+        dK_ptr, dK_stride, dK_order,
+        dV_ptr, dV_stride, dV_order,
+        T_r,
+        N,
+        d,
+        B_c,
+        B_r,
+        KV_block_shape,
+        OQ_block_shape,
+        lm_vec_shape
+        ):
+    return None
