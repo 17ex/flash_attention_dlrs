@@ -30,8 +30,8 @@ def flash_attention_forward(
 
     # L: 2 (Initialize output and statistics)
     O = torch.zeros_like(Q)
-    l = torch.zeros(N)
-    m = torch.full((N, ), -np.inf, dtype=torch.float32)
+    l = torch.zeros(N, 1)
+    m = torch.full((N, 1), -np.inf, dtype=torch.float32)
 
     print(f"B_c={B_c}, B_r={B_r}, d={d}")
 
@@ -144,18 +144,18 @@ def forward_outer(
                 ORDER)
         l_i_ptr = tl.make_block_ptr(
                 l_ptr,
-                (N, ),
-                (1, ),
-                (i * B_r, ),
-                (B_r, ),
-                (0, ))
+                (N, 1),
+                (1, 1),
+                (i * B_r, 0),
+                (B_r, 1),
+                ORDER)
         m_i_ptr = tl.make_block_ptr(
                 m_ptr,
-                (N, ),
-                (1, ),
-                (i * B_r, ),
-                (B_r, ),
-                (0, ))
+                (N, 1),
+                (1, 1),
+                (i * B_r, 0),
+                (B_r, 1),
+                ORDER)
 
         forward_inner(
                 Q_i_ptr,
@@ -190,11 +190,6 @@ def forward_inner(
     l_i = tl.load(l_i_ptr) # |
     m_i = tl.load(l_i_ptr) # |
 
-    # Reshaping vectors to 2-dim matrix
-    # TODO do this in initialization of l,m, not here.
-    l_i = tl.expand_dims(l_i, 1)
-    m_i = tl.expand_dims(m_i, 1)
-
     # L: 9 (Q_i * K_j^T)
     S_ij = tl.dot(Q_i, K_jT)
 
@@ -220,10 +215,6 @@ def forward_inner(
 
     # L: 12-13 (Write to HBM)
     tl.store(O_i_ptr, O_i_new)
-    # Reshape back to vector when storing. TODO remove this when shapes are fixed.
-    l_i_new = tl.sum(l_i_new, axis=1)
-    m_i_new = tl.sum(m_i_new, axis=1)
-
     tl.store(l_i_ptr, l_i_new)
     tl.store(m_i_ptr, m_i_new)
     return
