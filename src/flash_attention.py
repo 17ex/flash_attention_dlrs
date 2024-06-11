@@ -190,16 +190,23 @@ def forward_inner(
     l_i = tl.load(l_i_ptr) # |
     m_i = tl.load(l_i_ptr) # |
 
+    # Reshaping vectors to 2-dim matrix
+    # TODO do this in initialization of l,m, not here.
+    l_i = tl.expand_dims(l_i, 1)
+    m_i = tl.expand_dims(m_i, 1)
+
     # L: 9 (Q_i * K_j^T)
     S_ij = tl.dot(Q_i, K_jT)
 
     # L: 10 (~ Softmax for this block)
     mw_ij = tl.max(S_ij, axis=1)
-    Pw_ij = tl.exp(S_ij - mw_ij)
-    lw_ij = tl.sum(Pw_ij, axis=1)
+    mw_ij = tl.expand_dims(mw_ij, 1)
+    Pw_ij = tl.exp(S_ij - tl.broadcast_to(mw_ij, (B_r, B_c)))
+    lw_ij = tl.expand_dims(tl.sum(Pw_ij, axis=1), 1) # TODO Causing error here. might also be one line up.
 
     # L: 11 (~ Calculate new softmax combining above with previous data)
     m_i_new = tl.maximum(m_i, mw_ij)
+    #m_i_new = tl.maximum(m_i, tl.reshape(mw_ij, (B_r, )))
     prev_coeff = tl.exp(m_i - m_i_new)
     curr_coeff = tl.exp(mw_ij - m_i_new)
     l_i_new = prev_coeff * l_i + curr_coeff * lw_ij
@@ -213,9 +220,13 @@ def forward_inner(
 
     # L: 12-13 (Write to HBM)
     tl.store(O_i_ptr, O_i_new)
+    # Reshape back to vector when storing. TODO remove this when shapes are fixed.
+    l_i_new = tl.sum(l_i_new, axis=1)
+    m_i_new = tl.sum(m_i_new, axis=1)
+
     tl.store(l_i_ptr, l_i_new)
     tl.store(m_i_ptr, m_i_new)
-    return None
+    return
 
 
 
