@@ -5,6 +5,8 @@ import triton.language as tl
 
 FP32_BYTESIZE = 4 # TODO future: accomodate other types than float32.
 
+ORDER=(0, 1) # Hardcode for now. Maybe extend to other dim orders later.
+
 def cdiv(a, b):
     return (a + b - 1) // b
 
@@ -14,7 +16,7 @@ def flash_attention_forward(
         V,
         N, # Number of rows of Q,K,V
         d, # Number of columns of Q,K,V
-        M: tl.constexpr # SRAM size
+        M # SRAM size
         ):
 
     # TODO
@@ -31,35 +33,20 @@ def flash_attention_forward(
     l = torch.zeros(N)
     m = torch.full((N, ), -np.inf, dtype=torch.float32)
 
-    # Check if below can be used like this:
-    Q_stride = Q.stride()
-    Q_order = Q.dim_order()
-    K_stride = K.stride()
-    K_order = K.dim_order() # TODO apparently K.T.dim_order() is just swapped -> swap instead of transpose op?
-    V_stride = V.stride()
-    V_order = V.dim_order()
-    O_stride = O.stride()
-    O_order = O.dim_order()
-    m_stride = m.stride()
-    m_order = m.dim_order()
-    l_stride = l.stride()
-    l_order = l.dim_order()
+    print(f"B_c={B_c}, B_r={B_r}, d={d}")
 
     forward_kernel[(T_c, )](
-            Q, Q_stride, Q_order,
-            O, O_stride, O_order,
-            l, l_stride, l_order,
-            m, m_stride, m_order,
-            K, K_stride, K_order,
-            V, V_stride, V_order,
+            Q,
+            O,
+            l,
+            m,
+            K,
+            V,
             T_r,
             N,
             d,
             B_c,
-            B_r,
-            (B_c, d),
-            (B_r, d),
-            (B_r, )
+            B_r
             )
 
     # TODO store l, m? For now, just return
@@ -68,20 +55,17 @@ def flash_attention_forward(
 
 @triton.jit
 def forward_kernel(
-        Q_ptr, Q_stride, Q_order,
-        O_ptr, O_stride, O_order,
-        l_ptr, l_stride, l_order, # TODO l, m params can probably be omitted/set constant
-        m_ptr, m_stride, m_order,
-        K_ptr, K_stride, K_order,
-        V_ptr, V_stride, V_order,
-        T_r,
-        N,
-        d,
-        B_c,
-        B_r,
-        KV_block_shape,
-        OQ_block_shape,
-        statistics_vec_shape
+        Q_ptr,
+        O_ptr,
+        l_ptr,
+        m_ptr,
+        K_ptr,
+        V_ptr,
+        T_r: tl.constexpr,
+        N: tl.constexpr,
+        d: tl.constexpr,
+        B_c: tl.constexpr,
+        B_r: tl.constexpr
         ):
 
     j = tl.program_id(axis=0)
@@ -89,53 +73,52 @@ def forward_kernel(
     K_j_ptr = tl.make_block_ptr(
             K_ptr,
             (N, d),
-            K_stride,
+            (N, 1),
             (j * B_c, 0),
-            KV_block_shape,
-            K_order)
+            (B_c, d),
+            ORDER)
     V_j_ptr = tl.make_block_ptr(
             V_ptr,
             (N, d),
-            V_stride,
+            (N, 1),
             (j * B_c, 0),
-            KV_block_shape,
-            V_order)
+            (B_c, d),
+            ORDER)
 
     forward_outer(
-            Q_ptr, Q_stride, Q_order,
-            O_ptr, O_stride, O_order,
-            l_ptr, l_stride, l_order, # | TODO l, m params can probably be omitted/set constant
-            m_ptr, m_stride, m_order, # |
+            Q_ptr,
+            O_ptr,
+            l_ptr,
+            m_ptr,
             K_j_ptr,
             V_j_ptr,
             T_r,
             N,
             d,
             B_r,
-            OQ_block_shape,
-            statistics_vec_shape
+            B_c
             )
 
 
 @triton.jit
 def forward_outer(
-        Q_ptr, Q_stride, Q_order,
-        O_ptr, O_stride, O_order,
-        l_ptr, l_stride, l_order, # | TODO l, m params can probably be omitted/set constant
-        m_ptr, m_stride, m_order, # |
+        Q_ptr,
+        O_ptr,
+        l_ptr,
+        m_ptr,
         K_j_ptr,
         V_j_ptr,
-        T_r,
-        N,
-        d,
-        B_r,
-        OQ_block_shape,
-        statistics_vec_shape
+        T_r: tl.constexpr,
+        N: tl.constexpr,
+        d: tl.constexpr,
+        B_r: tl.constexpr,
+        B_c: tl.constexpr
         ):
 
     # L: 6
     K_j = tl.load(K_j_ptr) # | TODO padding_option or boundary-check
     V_j = tl.load(V_j_ptr) # |
+
 
     # TODO staging (num_stages)
     # Look into what staging was again, forgot what I meant by this
@@ -148,31 +131,31 @@ def forward_outer(
         Q_i_ptr = tl.make_block_ptr(
                 Q_ptr,
                 (N, d),
-                Q_stride,
+                (N, 1),
                 (i * B_r, 0),
-                OQ_block_shape,
-                Q_order)
+                (B_r, d),
+                ORDER)
         O_i_ptr = tl.make_block_ptr(
                 O_ptr,
                 (N, d),
-                O_stride,
+                (N, 1),
                 (i * B_r, 0),
-                OQ_block_shape,
-                O_order)
+                (B_r, d),
+                ORDER)
         l_i_ptr = tl.make_block_ptr(
                 l_ptr,
                 (N, ),
-                l_stride,
+                (1, ),
                 (i * B_r, ),
-                statistics_vec_shape,
-                l_order)
+                (B_r, ),
+                (0, ))
         m_i_ptr = tl.make_block_ptr(
                 m_ptr,
                 (N, ),
-                m_stride,
+                (1, ),
                 (i * B_r, ),
-                statistics_vec_shape,
-                m_order)
+                (B_r, ),
+                (0, ))
 
         forward_inner(
                 Q_i_ptr,
@@ -180,7 +163,9 @@ def forward_outer(
                 l_i_ptr,
                 m_i_ptr,
                 tl.trans(K_j),
-                V_j
+                V_j,
+                B_r,
+                B_c
                 )
 
 
@@ -192,7 +177,9 @@ def forward_inner(
         l_i_ptr,
         m_i_ptr,
         K_jT,
-        V_j
+        V_j,
+        B_r: tl.constexpr,
+        B_c: tl.constexpr
         ):
     # This function is for the inner loop (Lines 8-13 in Algorithm 1, Flash attention paper)
     # It takes as arguments all of the correctly set block pointers
