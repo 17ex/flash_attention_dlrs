@@ -1,4 +1,4 @@
-from flash_attention import flash_attention_forward
+from flash_attention_1_forward import flash_attention_forward
 import numpy as np
 import torch
 import triton
