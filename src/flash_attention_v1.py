@@ -1,4 +1,3 @@
-import numpy as np
 import torch
 import triton
 import triton.language as tl
@@ -32,16 +31,14 @@ def flash_attention_forward(
     rows_bytesize = FP32_BYTESIZE * d * 4 # Assuming FP32
     block_size = cdiv(M, rows_bytesize)
     B_c = min(block_size, N) # TODO verify whether this min is okay, it's not in the algorithm.
-    B_r = min(block_size, d)       # Should make sense though.
+    B_r = min(block_size, d) # Should make sense though.
     T_r = cdiv(N, B_r)
     T_c = cdiv(N, B_c)
 
     # L: 2 (Initialize output and statistics)
     O = torch.zeros_like(Q, device=dev)
-    l = torch.zeros(N, 1, device=dev)
-    m = torch.full((N, 1), -np.inf, dtype=torch.float32, device=dev)
-
-    print(f"B_c={B_c}, B_r={B_r}, T_r={T_r}, T_c={T_c}, N={N}, d={d}")
+    l = torch.zeros(N, 1, dtype=torch.float32, device=dev)
+    m = torch.full((N, 1), float('-inf'), dtype=torch.float32, device=dev)
 
     forward_kernel[(T_r, )](
             Q,
@@ -116,7 +113,7 @@ def forward_kernel(
     # The other values only need to be stored (at the end),
     # so no need to load them. Instead, init. in SRAM directly.
     O_i= tl.zeros_like(Q_i)
-    m_i= tl.full((B_r, 1), -np.inf, tl.float32)
+    m_i= tl.full((B_r, 1), float('-inf'), tl.float32)
     l_i= tl.zeros_like(m_i)
 
     for j in range(T_c):
@@ -156,11 +153,6 @@ def forward_kernel(
         Ps_ij = tl.exp(S_ij # TODO see if this can be refactored.
                        - tl.broadcast_to(ms_ij, (B_r, B_c)))
         ls_ij = tl.expand_dims(tl.sum(Ps_ij, axis=1), axis=1)
-        tl.static_print(ls_ij.shape)
-        tl.static_print(Ps_ij.shape)
-        # tl.static_assert(Ps_ij.shape[0] == B_r and Ps_ij.shape[1] == B_c)
-        # tl.static_assert(ms_ij.shape[0] == B_r and ms_ij.shape[1] == 1)
-        # tl.static_assert(ls_ij.shape == (B_r, 1))
 
         # Compute m_i_new, l_i_new (line 11)
         m_i_new = tl.maximum(m_i, ms_ij)
@@ -172,8 +164,6 @@ def forward_kernel(
         # l_i_new = prev_coeff * l_i + curr_coeff * lw_ij
 
         # Calculate new O_i (line 12)
-        acc_coeff = l_i * tl.exp(m_i - m_i_new)
-        new_coeff = l_i * tl.exp(m_i - m_i_new)
         O_i = (l_i * tl.exp(m_i - m_i_new) * O_i
                + tl.exp(ms_ij - m_i_new) * tl.dot(Ps_ij, V_j)) \
                        / l_i_new
