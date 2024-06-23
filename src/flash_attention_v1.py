@@ -86,14 +86,14 @@ def forward_kernel(
     Q_i_ptr = tl.make_block_ptr(
             Q_ptr,
             (N, d),
-            (N, 1),
+            (d, 1),
             (i * B_r, 0),
             (B_r, d),
             ORDER)
     O_i_ptr = tl.make_block_ptr(
             O_ptr,
             (N, d),
-            (N, 1),
+            (d, 1),
             (i * B_r, 0),
             (B_r, d),
             ORDER)
@@ -125,14 +125,14 @@ def forward_kernel(
         K_j_ptr = tl.make_block_ptr(
                 K_ptr,
                 (N, d),
-                (N, 1),
+                (d, 1),
                 (j * B_c, 0),
                 (B_c, d),
                 ORDER)
         V_j_ptr = tl.make_block_ptr(
                 V_ptr,
                 (N, d),
-                (N, 1),
+                (d, 1),
                 (j * B_c, 0),
                 (B_c, d),
                 ORDER)
