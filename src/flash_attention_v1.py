@@ -48,6 +48,7 @@ def flash_attention_forward(
             K,
             V,
             T_c,
+            T_r,
             N,
             d,
             B_c,
@@ -67,11 +68,15 @@ def forward_kernel(
         K_ptr,
         V_ptr,
         T_c: tl.constexpr,
+        T_r: tl.constexpr,
         N: tl.constexpr,
         d: tl.constexpr,
         B_c: tl.constexpr,
         B_r: tl.constexpr
         ):
+
+    tl.static_print(f"JIT-compiling flash attention v1 forward kernel for:")
+    tl.static_print(f"B_c={B_c}, B_r={B_r}, T_r={T_r}, T_c={T_c}, N={N}, d={d}")
     # This performs one iteration of the outer loop.
     # Note that the loops are swapped compared to Algorithm 1 in the
     # Flash Attention V1 paper, so this is run for one i,
