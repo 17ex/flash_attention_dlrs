@@ -1,0 +1,307 @@
+import numpy as np
+import torch
+import triton
+import triton.language as tl
+
+FP32_BYTESIZE = 4 # TODO future: accomodate other types than float32.
+DTYPE = torch.float32
+
+ORDER=(0, 1) # Hardcode for now. Maybe extend to other dim orders later.
+
+def cdiv(a, b):
+    return (a + b - 1) // b
+
+def flash_attention_forward(
+        Q,
+        K,
+        V,
+        N, # Number of rows of Q,K,V
+        d, # Number of columns of Q,K,V
+        M, # SRAM size
+        dev
+        ):
+
+    assert Q.dim_order() == ORDER and K.dim_order() == ORDER and V.dim_order() == ORDER
+    shape = torch.Size([N, d])
+    assert Q.shape == shape and K.shape == shape and V.shape == shape
+    assert Q.dtype == DTYPE and K.dtype == DTYPE and V.dtype == DTYPE
+
+    # TODO
+    # When writing a module, these can be changed into module properties
+    # L: 1 (Determine block sizes)
+    rows_bytesize = FP32_BYTESIZE * d * 4 # Assuming FP32
+    block_size = cdiv(M, rows_bytesize)
+    B_c = min(block_size, N) # TODO verify whether this min is okay, it's not in the algorithm.
+    B_r = min(block_size, d)       # Should make sense though.
+    T_r = cdiv(N, B_r)
+    T_c = cdiv(N, B_c)
+
+    # L: 2 (Initialize output and statistics)
+    O = torch.zeros_like(Q, device=dev)
+    l = torch.zeros(N, 1, device=dev)
+    m = torch.full((N, 1), -np.inf, dtype=torch.float32, device=dev)
+
+    print(f"B_c={B_c}, B_r={B_r}, T_r={T_r}, T_c={T_c}, N={N}, d={d}")
+
+    forward_kernel[(T_r, )](
+            Q,
+            O,
+            l,
+            m,
+            K,
+            V,
+            T_c,
+            N,
+            d,
+            B_c,
+            B_r
+            )
+
+    # TODO store l, m? For now, just return
+    return O, l, m
+
+
+@triton.jit
+def forward_kernel(
+        Q_ptr,
+        O_ptr,
+        l_ptr,
+        m_ptr,
+        K_ptr,
+        V_ptr,
+        T_c: tl.constexpr,
+        N: tl.constexpr,
+        d: tl.constexpr,
+        B_c: tl.constexpr,
+        B_r: tl.constexpr
+        ):
+    # This performs one iteration of the outer loop.
+    # Note that the loops are swapped compared to Algorithm 1 in the
+    # Flash Attention V1 paper, so this is run for one i,
+    # 1 <= i <= T_r, with the loop over j inside.
+
+    i = tl.program_id(axis=0) # TODO Batched. Currently non-batched only.
+
+    # Create pointers to all *_i blocks (line 8)
+    Q_i_ptr = tl.make_block_ptr(
+            Q_ptr,
+            (N, d),
+            (N, 1),
+            (i * B_r, 0),
+            (B_r, d),
+            ORDER)
+    O_i_ptr = tl.make_block_ptr(
+            O_ptr,
+            (N, d),
+            (N, 1),
+            (i * B_r, 0),
+            (B_r, d),
+            ORDER)
+    l_i_ptr = tl.make_block_ptr(
+            l_ptr,
+            (N, 1),
+            (1, 1),
+            (i * B_r, 0),
+            (B_r, 1),
+            ORDER)
+    m_i_ptr = tl.make_block_ptr(
+            m_ptr,
+            (N, 1),
+            (1, 1),
+            (i * B_r, 0),
+            (B_r, 1),
+            ORDER)
+
+    Q_i = tl.load(Q_i_ptr)
+    # The other values only need to be stored (at the end),
+    # so no need to load them. Instead, init. in SRAM directly.
+    O_i= tl.zeros_like(Q_i)
+    m_i= tl.full((B_r, 1), -np.inf, tl.float32)
+    l_i= tl.zeros_like(m_i)
+
+    for j in range(T_c):
+
+        # Create pointers and load the *_j blocks (line 6)
+        K_j_ptr = tl.make_block_ptr(
+                K_ptr,
+                (N, d),
+                (N, 1),
+                (j * B_c, 0),
+                (B_c, d),
+                ORDER)
+        V_j_ptr = tl.make_block_ptr(
+                V_ptr,
+                (N, d),
+                (N, 1),
+                (j * B_c, 0),
+                (B_c, d),
+                ORDER)
+        K_j = tl.load(K_j_ptr)
+        V_j = tl.load(V_j_ptr)
+
+        # Compute Q_i K_j^T (line 9)
+        # TODO with this, it works:
+        # S_ij = tl.zeros((B_r, B_c), dtype=tl.float32)
+        # TODO ERROR HERE:
+        # tl.trans call here results in:
+        # -------------------------------------------------
+        # unsupported layout conversion
+        # UNREACHABLE executed at /project/lib/Conversion/TritonGPUToLLVM/ConvertLayoutOpToLLVM.cpp:99!
+        # zsh: IOT instruction (core dumped)  python forward_test_simple.py
+        # -------------------------------------------------
+        S_ij = tl.dot(Q_i, tl.trans(K_j))
+
+        # Verify S_ij is of shape (B_r, B_c) at compile time.
+        # TODO this did not work with a tuple, hence the two checks.
+        # Check why S_ij.shape == (B_r, B_c) didn't work.
+        # tl.static_assert(S_ij.shape[0] == B_r and S_ij.shape[1] == B_c)
+
+
+        # Compute m~_ij, P~_ij, l~_ij (line 10)
+        # TODO doc says there is a keep_dims=True argument which would make some of this
+        # dumb adding/removing the last dimension unnecessary, but it doesn't exist
+        # in my Triton (2.3.0). Check which version has this
+        # TODO better do reshaping/expand dims with eg. ms_ij[:, None] ?
+        ms_ij = tl.expand_dims(tl.max(S_ij, axis=1), axis=1)
+        Ps_ij = tl.exp(S_ij # TODO see if this can be refactored.
+                       - tl.broadcast_to(ms_ij, (B_r, B_c)))
+        ls_ij = tl.expand_dims(tl.sum(Ps_ij, axis=1), axis=1)
+        tl.static_print(ls_ij.shape)
+        tl.static_print(Ps_ij.shape)
+        # tl.static_assert(Ps_ij.shape[0] == B_r and Ps_ij.shape[1] == B_c)
+        # tl.static_assert(ms_ij.shape[0] == B_r and ms_ij.shape[1] == 1)
+        # tl.static_assert(ls_ij.shape == (B_r, 1))
+
+        # Compute m_i_new, l_i_new (line 11)
+        m_i_new = tl.maximum(m_i, ms_ij)
+        l_i_new = tl.exp(m_i - m_i_new) * l_i \
+                + tl.exp(ms_ij - m_i_new) * ls_ij
+        #m_i_new = tl.maximum(m_i, tl.reshape(mw_ij, (B_r, )))
+        # prev_coeff = tl.exp(m_i - m_i_new)
+        # curr_coeff = tl.exp(ms_ij - m_i_new)
+        # l_i_new = prev_coeff * l_i + curr_coeff * lw_ij
+
+        # Calculate new O_i (line 12)
+        acc_coeff = l_i * tl.exp(m_i - m_i_new)
+        new_coeff = l_i * tl.exp(m_i - m_i_new)
+        O_i = (l_i * tl.exp(m_i - m_i_new) * O_i
+               + tl.exp(ms_ij - m_i_new) * tl.dot(Ps_ij, V_j)) \
+                       / l_i_new
+
+        # Overwrite old l_i, m_i (line 13)
+        l_i = l_i_new
+        m_i = m_i_new
+
+    # This loop/kernel is done (looped over all j for this i),
+    # store the results and exit
+    tl.store(O_i_ptr, O_i)
+    tl.store(l_i_ptr, l_i)
+    tl.store(m_i_ptr, m_i)
+    return
+
+
+@triton.jit
+def forward_outer(
+        Q_ptr,
+        O_ptr,
+        l_ptr,
+        m_ptr,
+        K_j_ptr,
+        V_j_ptr,
+        T_c: tl.constexpr,
+        N: tl.constexpr,
+        d: tl.constexpr,
+        B_r: tl.constexpr,
+        B_c: tl.constexpr
+        ):
+
+    # L: 6
+    K_j = tl.load(K_j_ptr) # | TODO padding_option or boundary-check
+    V_j = tl.load(V_j_ptr) # |
+
+
+    # TODO staging (num_stages)
+    # Look into what staging was again, forgot what I meant by this
+    # L: 7
+    for i in range(T_r):
+
+        # make *_i_ptrs for the blocks that are loaded in forward_inner
+        # TODO
+        # maybe use advance? -> only call make_block_ptr once, then advance
+        Q_i_ptr = tl.make_block_ptr(
+                Q_ptr,
+                (N, d),
+                (N, 1),
+                (i * B_r, 0),
+                (B_r, d),
+                ORDER)
+        O_i_ptr = tl.make_block_ptr(
+                O_ptr,
+                (N, d),
+                (N, 1),
+                (i * B_r, 0),
+                (B_r, d),
+                ORDER)
+
+        forward_inner(
+                Q_i_ptr,
+                O_i_ptr,
+                l_i_ptr,
+                m_i_ptr,
+                tl.trans(K_j),
+                V_j,
+                B_r,
+                B_c
+                )
+
+
+
+@triton.jit
+def forward_inner(
+        Q_i_ptr,
+        O_i_ptr,
+        l_i_ptr,
+        m_i_ptr,
+        K_jT,
+        V_j,
+        B_r: tl.constexpr,
+        B_c: tl.constexpr
+        ):
+    # This function is for the inner loop (Lines 8-13 in Algorithm 1, Flash attention paper)
+    # It takes as arguments all of the correctly set block pointers
+
+    # L: 8 (Load to SRAM)
+    Q_i = tl.load(Q_i_ptr) # | TODO padding_option or boundary-check
+    O_i = tl.load(O_i_ptr) # |
+    l_i = tl.load(l_i_ptr) # |
+    m_i = tl.load(l_i_ptr) # |
+
+    # L: 9 (Q_i * K_j^T)
+    S_ij = tl.dot(Q_i, K_jT)
+
+    # L: 10 (~ Softmax for this block)
+    mw_ij = tl.max(S_ij, axis=1)
+    mw_ij = tl.expand_dims(mw_ij, 1)
+    Pw_ij = tl.exp(S_ij - tl.broadcast_to(mw_ij, (B_r, B_c)))
+    lw_ij = tl.expand_dims(tl.sum(Pw_ij, axis=1), 1)
+
+    # L: 11 (~ Calculate new softmax combining above with previous data)
+    m_i_new = tl.maximum(m_i, mw_ij)
+    #m_i_new = tl.maximum(m_i, tl.reshape(mw_ij, (B_r, )))
+    prev_coeff = tl.exp(m_i - m_i_new)
+    curr_coeff = tl.exp(mw_ij - m_i_new)
+    l_i_new = prev_coeff * l_i + curr_coeff * lw_ij
+    # TODO Determine if one should use fma here
+    # Probably compiler does optimize anyways ?
+
+    # L: 12 (Calculate new O_i)
+    O_i_new = ((
+            l_i * prev_coeff * O_i +
+            curr_coeff * tl.dot(Pw_ij, V_j))
+        / l_i_new)
+
+    # L: 12-13 (Write to HBM)
+    tl.store(O_i_ptr, O_i_new)
+    tl.store(l_i_ptr, l_i_new)
+    tl.store(m_i_ptr, m_i_new)
+    return
