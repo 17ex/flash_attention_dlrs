@@ -5,7 +5,7 @@ import triton.language as tl
 FP32_BYTESIZE = 4 # TODO future: accomodate other types than float32.
 DTYPE = torch.float32
 
-ORDER=(0, 1) # Hardcode for now. Maybe extend to other dim orders later.
+ORDER: tl.constexpr = (0, 1) # Hardcode for now. Maybe extend to other dim orders later.
 
 def cdiv(a, b):
     return (a + b - 1) // b
