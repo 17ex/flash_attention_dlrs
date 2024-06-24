@@ -2,7 +2,7 @@ from flash_attention_v1 import flash_attention_forward
 import torch
 
 N = 256
-d = 128
+d = 123
 NUM_TESTS = 100
 
 # NVIDIA GA102 GPUs
