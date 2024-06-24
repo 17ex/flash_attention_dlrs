@@ -25,11 +25,13 @@ def flash_attention_forward(
     assert Q.shape == shape and K.shape == shape and V.shape == shape
     assert Q.dtype == DTYPE and K.dtype == DTYPE and V.dtype == DTYPE
 
+    # In order to work with non-power-of-2 N and d
+    N_pow = triton.next_power_of_2(N) # TODO Power of 2 is probably not necessary? Just div. by B_c, B_r?
     d_pow = triton.next_power_of_2(d)
 
-    if d_pow != d:
+    if N_pow != N or d_pow != d:
         # Apply padding
-        pad = (0, d_pow - d)
+        pad = (0, d_pow - d, 0, N - N_pow)
         Q = torch.nn.functional.pad(Q, pad, mode='constant', value=0.0)
         K = torch.nn.functional.pad(K, pad, mode='constant', value=0.0)
         V = torch.nn.functional.pad(V, pad, mode='constant', value=0.0)
@@ -39,15 +41,15 @@ def flash_attention_forward(
     # L: 1 (Determine block sizes)
     rows_bytesize = FP32_BYTESIZE * d_pow * 4 # Assuming FP32
     block_size = cdiv(M, rows_bytesize)
-    B_c = min(block_size, N) # TODO verify whether this min is okay, it's not in the algorithm.
+    B_c = min(block_size, N_pow) # TODO verify whether this min is okay, it's not in the algorithm.
     B_r = min(block_size, d_pow) # Should make sense though.
-    T_r = cdiv(N, B_r)
-    T_c = cdiv(N, B_c)
+    T_r = cdiv(N_pow, B_r)
+    T_c = cdiv(N_pow, B_c)
 
     # L: 2 (Initialize output and statistics)
-    O = torch.zeros(N, d_pow, dtype=DTYPE, device=dev)
-    l = torch.zeros(N, 1, dtype=DTYPE, device=dev)
-    m = torch.full((N, 1), float('-inf'), dtype=DTYPE, device=dev)
+    O = torch.zeros(N_pow, d_pow, dtype=DTYPE, device=dev)
+    l = torch.zeros(N_pow, 1, dtype=DTYPE, device=dev)
+    m = torch.full((N_pow, 1), float('-inf'), dtype=DTYPE, device=dev)
 
     forward_kernel[(T_r, )](
             Q,
@@ -58,14 +60,16 @@ def flash_attention_forward(
             V,
             T_c,
             T_r,
-            N,
+            N_pow,
             d_pow,
             B_c,
-            B_r
+            B_r,
+            N, # Original (unpadded) dimensions
+            d
             )
 
     # TODO store l, m? For now, just return
-    return O[:, 0:d], l, m
+    return O[0:N, 0:d], l, m
 
 
 @triton.jit
@@ -81,8 +85,12 @@ def forward_kernel(
         N: tl.constexpr,
         d: tl.constexpr,
         B_c: tl.constexpr,
-        B_r: tl.constexpr
+        B_r: tl.constexpr,
+        N_unpadded: tl.constexpr,
+        d_unpadded: tl.constexpr
         ):
+
+    masking_needed: tl.constexpr = N_unpadded != N or d_unpadded != d
 
     tl.static_print(f"JIT-compiling flash attention v1 forward kernel for:")
     tl.static_print(f"B_c={B_c}, B_r={B_r}, T_r={T_r}, T_c={T_c}, N={N}, d={d}")
@@ -124,6 +132,19 @@ def forward_kernel(
             ORDER)
 
     Q_i = tl.load(Q_i_ptr)
+    # if masking_needed:
+        # # Here, we only need to mask in the d dimension, we don't need
+        # # to worry about N.
+        # # This sets all elements in column >= d_unpadded to zero.
+        # # No need to do the same for N.
+        # Q_i = tl.where(
+                # tl.broadcast_to(
+                    # tl.expand_dims(tl.arange(0, d), axis=0),
+                    # (B_r, d))
+                # < d_unpadded,
+                # Q_i,
+                # 0.0)
+
     # The other values only need to be stored (at the end),
     # so no need to load them. Instead, init. in SRAM directly.
     O_i= tl.zeros_like(Q_i)
@@ -149,19 +170,67 @@ def forward_kernel(
                 ORDER)
         K_j = tl.load(K_j_ptr)
         V_j = tl.load(V_j_ptr)
+        # if masking_needed:
+            # # Mathematically, only Q_i masking is needed, but K_j must be
+            # # masked in the same way, because otherwise it might be possible to load
+            # # float infs, which would produce nans.
+            # K_j = tl.where(
+                    # tl.broadcast_to(
+                        # tl.expand_dims(
+                            # tl.arange(0, d), axis=0),
+                        # (B_c, d))
+                    # < d_unpadded,
+                    # K_j,
+                    # 0.0)
+            # # For V_j, we only need to mask along N (rows) instead of d.
+            # if j == T_c - 1:
+                # # Only in the last iteration is it possible for V_j to contain
+                # # padded rows, as we loop over them.
+                # V_j = tl.where(
+                        # tl.trans(
+                            # tl.broadcast_to(
+                                # tl.expand_dims(
+                                    # j * B_c + tl.arange(0, B_c),
+                                    # axis=0),
+                                # (d, B_c))) # TODO surely this can be written better
+                            # < N_unpadded,
+                        # V_j,
+                        # 0.0)
 
         # Compute Q_i K_j^T (line 9)
         S_ij = tl.dot(Q_i, tl.trans(K_j))
+        # Need to mask the columns > d_unpadded in S_ij with -inf
+        # before the 'softmax'/exponential calculation, as exp(-inf) = 0 (neutral)
+        # As with V_j, this masks along N (B_c, columns this time), so we only need
+        # to mask in the last iteration.
+        # Masking S instead of P should ensure that ms_ij etc. are also correct.
+        # if masking_needed:
+            # if T_c - 1 == j:
+                # S_ij = tl.where(
+                        # tl.broadcast_to(
+                            # tl.expand_dims(
+                                # j * B_c + tl.arange(0, B_c),
+                                # axis=0),
+                            # (B_r, B_c))
+                        # < N_unpadded,
+                        # S_ij,
+                        # float('-inf'))
+                        # float('-inf'))
 
         # Verify S_ij is of shape (B_r, B_c) at compile time.
         # TODO this did not work with a tuple, hence the two checks.
         # Check why S_ij.shape == (B_r, B_c) didn't work.
         tl.static_assert(S_ij.shape[0] == B_r and S_ij.shape[1] == B_c)
 
+            # tl.device_print("S_ij",S_ij)
+
         # Compute m~_ij, P~_ij, l~_ij (line 10)
         ms_ij = tl.max(S_ij, axis=1, keep_dims=True)
         Ps_ij = tl.exp(S_ij - ms_ij)
         ls_ij = tl.sum(Ps_ij, axis=1, keep_dims=True)
+        # tl.device_print("ms_ij", ms_ij)
+        # tl.device_print('S_ij', S_ij)
+        # tl.device_print('Ps_ij', Ps_ij)
 
         # Compute m_i_new, l_i_new (line 11)
         m_i_new = tl.maximum(m_i, ms_ij)
