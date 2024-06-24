@@ -150,14 +150,9 @@ def forward_kernel(
         tl.static_assert(S_ij.shape[0] == B_r and S_ij.shape[1] == B_c)
 
         # Compute m~_ij, P~_ij, l~_ij (line 10)
-        # TODO doc says there is a keep_dims=True argument which would make some of this
-        # dumb adding/removing the last dimension unnecessary, but it doesn't exist
-        # in my Triton (2.3.0). Check which version has this
-        # TODO better do reshaping/expand dims with eg. ms_ij[:, None] ?
-        ms_ij = tl.expand_dims(tl.max(S_ij, axis=1), axis=1)
-        Ps_ij = tl.exp(S_ij # TODO see if this can be refactored.
-                       - tl.broadcast_to(ms_ij, (B_r, B_c)))
-        ls_ij = tl.expand_dims(tl.sum(Ps_ij, axis=1), axis=1)
+        ms_ij = tl.max(S_ij, axis=1, keep_dims=True)
+        Ps_ij = tl.exp(S_ij - ms_ij)
+        ls_ij = tl.sum(Ps_ij, axis=1, keep_dims=True)
 
         # Compute m_i_new, l_i_new (line 11)
         m_i_new = tl.maximum(m_i, ms_ij)
