@@ -25,20 +25,29 @@ def flash_attention_forward(
     assert Q.shape == shape and K.shape == shape and V.shape == shape
     assert Q.dtype == DTYPE and K.dtype == DTYPE and V.dtype == DTYPE
 
+    d_pow = triton.next_power_of_2(d)
+
+    if d_pow != d:
+        # Apply padding
+        pad = (0, d_pow - d)
+        Q = torch.nn.functional.pad(Q, pad, mode='constant', value=0.0)
+        K = torch.nn.functional.pad(K, pad, mode='constant', value=0.0)
+        V = torch.nn.functional.pad(V, pad, mode='constant', value=0.0)
+
     # TODO
     # When writing a module, these can be changed into module properties
     # L: 1 (Determine block sizes)
-    rows_bytesize = FP32_BYTESIZE * d * 4 # Assuming FP32
+    rows_bytesize = FP32_BYTESIZE * d_pow * 4 # Assuming FP32
     block_size = cdiv(M, rows_bytesize)
     B_c = min(block_size, N) # TODO verify whether this min is okay, it's not in the algorithm.
-    B_r = min(block_size, d) # Should make sense though.
+    B_r = min(block_size, d_pow) # Should make sense though.
     T_r = cdiv(N, B_r)
     T_c = cdiv(N, B_c)
 
     # L: 2 (Initialize output and statistics)
-    O = torch.zeros_like(Q, device=dev)
-    l = torch.zeros(N, 1, dtype=torch.float32, device=dev)
-    m = torch.full((N, 1), float('-inf'), dtype=torch.float32, device=dev)
+    O = torch.zeros(N, d_pow, dtype=DTYPE, device=dev)
+    l = torch.zeros(N, 1, dtype=DTYPE, device=dev)
+    m = torch.full((N, 1), float('-inf'), dtype=DTYPE, device=dev)
 
     forward_kernel[(T_r, )](
             Q,
@@ -50,13 +59,13 @@ def flash_attention_forward(
             T_c,
             T_r,
             N,
-            d,
+            d_pow,
             B_c,
             B_r
             )
 
     # TODO store l, m? For now, just return
-    return O, l, m
+    return O[:, 0:d], l, m
 
 
 @triton.jit
@@ -174,7 +183,9 @@ def forward_kernel(
 
     # This loop/kernel is done (looped over all j for this i),
     # store the results and exit
+    # Writes to O are not masked (I don't think that's really possible here),
+    # whatever function called this should ensure to only read the appropriate sub-tensor
     tl.store(O_i_ptr, O_i)
-    tl.store(l_i_ptr, l_i)
-    tl.store(m_i_ptr, m_i)
+    tl.store(l_i_ptr, l_i) # TODO Check if you can get away with not
+    tl.store(m_i_ptr, m_i) # masking l_i, m_i
     return
