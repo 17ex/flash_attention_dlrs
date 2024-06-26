@@ -21,7 +21,7 @@ for test in range(NUM_TESTS):
     K = torch.randn(N, d, device=gpu)
     V = torch.randn(N, d, device=gpu)
     O_torch = torch.nn.functional.scaled_dot_product_attention(Q, K, V, scale=1)
-    O_flash, l_flash, m_flash = flash_attention_forward(
+    O_flash, L_flash = flash_attention_forward(
             Q,
             K,
             V,
