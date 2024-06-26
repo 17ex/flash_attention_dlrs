@@ -45,9 +45,9 @@ def flash_attention_forward(
     T_c = cdiv(N, B_c)
 
     # L: 2 (Initialize output and statistics)
-    O = torch.zeros(N, d_pow, dtype=DTYPE, device=dev)
-    l = torch.zeros(N, 1, dtype=DTYPE, device=dev)
-    m = torch.full((N, 1), float('-inf'), dtype=DTYPE, device=dev)
+    O = torch.empty(N, d_pow, dtype=DTYPE, device=dev)
+    l = torch.empty(N, 1, dtype=DTYPE, device=dev)
+    m = torch.empty(N, 1, dtype=DTYPE, device=dev)
 
     forward_kernel[(T_r, )](
             Q,
