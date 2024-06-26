@@ -189,3 +189,173 @@ def forward_kernel(
     tl.store(l_i_ptr, l_i) # TODO Check if you can get away with not
     tl.store(m_i_ptr, m_i) # masking l_i, m_i
     return
+
+
+
+def flash_attention_backward(
+        Q,
+        K,
+        V,
+        O,
+        dO,
+        l,
+        m,
+        M,
+        ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    assert Q.dim_order() == ORDER and K.dim_order() == ORDER and V.dim_order() == ORDER
+    assert Q.shape ==  K.shape  and V.shape == K.shape
+    assert Q.dtype == DTYPE and K.dtype == DTYPE and V.dtype == DTYPE
+
+    N, d = Q.shape[-2:]
+
+    d_pow = triton.next_power_of_2(d)
+
+    if d_pow != d:
+        # Apply padding
+        pad = (0, d_pow - d)
+        Q = torch.nn.functional.pad(Q, pad, mode='constant', value=0.0)
+        K = torch.nn.functional.pad(K, pad, mode='constant', value=0.0)
+        V = torch.nn.functional.pad(V, pad, mode='constant', value=0.0)
+
+    # TODO
+    # When writing a module, these can be changed into module properties
+    # L: 1 (Determine block sizes)
+    rows_bytesize = FP32_BYTESIZE * d_pow * 4 # Assuming FP32
+    block_size = cdiv(M, rows_bytesize)
+    B_c = min(block_size, N) # TODO verify whether this min is okay, it's not in the algorithm.
+    B_r = min(block_size, d_pow) # Should make sense though.
+    T_r = cdiv(N, B_r)
+    T_c = cdiv(N, B_c)
+    dQ = torch.empty_like(Q)
+    dK = torch.empty_like(K)
+    dV = torch.empty_like(V)
+
+    backward_kernel[(T_c, )](
+            Q, K, V, O,
+            dQ, dK, dV, dO,
+            l, m,
+            T_c,
+            T_r,
+            N,
+            d,
+            B_c,
+            B_r
+            )
+
+    return dQ, dK, dV
+
+
+@triton.jit
+def backward_kernel(
+        Q_ptr, K_ptr, V_ptr, O_ptr,
+        dQ_ptr, dK_ptr, dV_ptr, dO_ptr,
+        l_ptr, m_ptr,
+        T_c: tl.constexpr,
+        T_r: tl.constexpr,
+        N: tl.constexpr,
+        d: tl.constexpr,
+        B_c: tl.constexpr,
+        B_r: tl.constexpr
+        ) -> None:
+
+    # Loop over j < T_c first (parallel over different kernel launches),
+    # and have the inner loop over i < T_r within each kernel
+    j = tl.program_id(axis=0)
+    # Create pointers and load the *_j blocks (line 6)
+    K_j_ptr = tl.make_block_ptr(
+            K_ptr,
+            (N, d),
+            (d, 1),
+            (j * B_c, 0),
+            (B_c, d),
+            ORDER)
+    V_j_ptr = tl.make_block_ptr(
+            V_ptr,
+            (N, d),
+            (d, 1),
+            (j * B_c, 0),
+            (B_c, d),
+            ORDER)
+    dK_j_ptr = tl.make_block_ptr(
+            dK_ptr,
+            (N, d),
+            (d, 1),
+            (j * B_c, 0),
+            (B_c, d),
+            ORDER)
+    dV_j_ptr = tl.make_block_ptr(
+            dV_ptr,
+            (N, d),
+            (d, 1),
+            (j * B_c, 0),
+            (B_c, d),
+            ORDER)
+    K_j = tl.load(K_j_ptr)
+    V_j = tl.load(V_j_ptr)
+
+    for i in range(T_r):
+        # def. *_i ptrs
+        Q_i_ptr = tl.make_block_ptr(
+                Q_ptr,
+                (N, d),
+                (d, 1),
+                (i * B_r, 0),
+                (B_r, d),
+                ORDER)
+        O_i_ptr = tl.make_block_ptr(
+                O_ptr,
+                (N, d),
+                (d, 1),
+                (i * B_r, 0),
+                (B_r, d),
+                ORDER)
+        dO_i_ptr = tl.make_block_ptr(
+                dO_ptr,
+                (N, d),
+                (d, 1),
+                (i * B_r, 0),
+                (B_r, d),
+                ORDER)
+        dQ_i_ptr = tl.make_block_ptr(
+                dQ_ptr,
+                (N, d),
+                (d, 1),
+                (i * B_r, 0),
+                (B_r, d),
+                ORDER)
+        l_i_ptr = tl.make_block_ptr(
+                l_ptr,
+                (N, 1),
+                (1, 1),
+                (i * B_r, 0),
+                (B_r, 1),
+                ORDER)
+        m_i_ptr = tl.make_block_ptr(
+                m_ptr,
+                (N, 1),
+                (1, 1),
+                (i * B_r, 0),
+                (B_r, 1),
+                ORDER)
+
+        # Load *_i blocks
+        Q_i = tl.load(Q_i_ptr)
+        O_i = tl.load(O_i_ptr)
+        dO_i = tl.load(dO_i_ptr)
+        dQ_i = tl.load(dQ_i_ptr)
+        l_i = tl.load(l_i_ptr)
+        m_i = tl.load(m_i_ptr)
+
+        # TODO
+        # The rest.
+
+        # Main problem: Somehow establish inter thread communication to ensure
+        # only one thread at a time can add to dQ_i.
+        # Flash Attention v2 paper says they simply used atomic adds for this.
+        # Probably only for communication and not for atomically adding every element
+        # individually.
+        # Figure out how to abuse atomic_add (or maybe better: atomic_cas?) to
+        # implement locks for dQ_i.
+
+
+    return
