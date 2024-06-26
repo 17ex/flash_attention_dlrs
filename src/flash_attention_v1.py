@@ -229,11 +229,13 @@ def flash_attention_backward(
     dQ = torch.empty_like(Q)
     dK = torch.empty_like(K)
     dV = torch.empty_like(V)
+    _lock_dQ = torch.zeros(1, dtype=torch.int8)
 
     backward_kernel[(T_c, )](
             Q, K, V, O,
             dQ, dK, dV, dO,
             l, m,
+            _lock_dQ,
             T_c,
             T_r,
             N,
@@ -250,6 +252,7 @@ def backward_kernel(
         Q_ptr, K_ptr, V_ptr, O_ptr,
         dQ_ptr, dK_ptr, dV_ptr, dO_ptr,
         l_ptr, m_ptr,
+        _lock_dQ,
         T_c: tl.constexpr,
         T_r: tl.constexpr,
         N: tl.constexpr,
@@ -292,6 +295,8 @@ def backward_kernel(
             ORDER)
     K_j = tl.load(K_j_ptr)
     V_j = tl.load(V_j_ptr)
+    dK_j = tl.zeros_like(K_j)
+    dV_j = tl.zeros_like(V_j)
 
     for i in range(T_r):
         # def. *_i ptrs
@@ -342,13 +347,26 @@ def backward_kernel(
         Q_i = tl.load(Q_i_ptr)
         O_i = tl.load(O_i_ptr)
         dO_i = tl.load(dO_i_ptr)
-        dQ_i = tl.load(dQ_i_ptr)
         l_i = tl.load(l_i_ptr)
         m_i = tl.load(m_i_ptr)
 
-        # TODO
-        # The rest.
+        S_ij = tl.dot(Q_i, tl.trans(K_j))
 
+        P_ij = tl.exp(S_ij - m_i) / l_i
+
+        dV_j = dV_j + tl.dot(tl.trans(P_ij), dO_i)
+
+        dP_ij = tl.dot(dO_i, tl.trans(V_j))
+
+        D_i = tl.sum(dO_i * O_i, axis=1, keep_dims=True)
+
+        dS_ij = P_ij * (dP_ij - D_i)
+
+        # TODO
+        # with lock_dQ:
+            # dQ_i = tl.load(dQ_i_ptr) + tl.dot(tl.trans(dS_ij), K_j)
+            # tl.store(dQ_i_ptr, dQ_i)
+        # (somehow release the lock)
         # Main problem: Somehow establish inter thread communication to ensure
         # only one thread at a time can add to dQ_i.
         # Flash Attention v2 paper says they simply used atomic adds for this.
@@ -357,5 +375,19 @@ def backward_kernel(
         # Figure out how to abuse atomic_add (or maybe better: atomic_cas?) to
         # implement locks for dQ_i.
 
+        # Idea: something like:
+        # while 0 == tl.atomic_cas(...):
+        #     pass
+        # Then we have the lock.
+
+        # Or, figure out what memory semantics mean with atomic ops,
+        # and if acquire means that all other threads wait with executing their
+        # atomic op until this thread does atomic_cas again with release memory semantic,
+        # and some other thread can acquire?
+
+        dK_j = dK_j + tl.dot(tl.trans(dS_ij), Q_i)
+
+    tl.store(dK_j_ptr, dK_j)
+    tl.store(dV_j_ptr, dV_j)
 
     return
