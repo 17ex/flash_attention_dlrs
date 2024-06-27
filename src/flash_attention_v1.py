@@ -219,13 +219,15 @@ def flash_attention_backward(
     dQ = torch.empty_like(Q)
     dK = torch.empty_like(K)
     dV = torch.empty_like(V)
-    _lock_dQ = torch.zeros(1, dtype=torch.int8)
+    # int64 because atomic ops pointers only work on aligned memory
+    _lock_dQ = torch.zeros(T_r, dtype=torch.int64)
+    _written_dQ = torch.zeros(T_r, dtype=torch.int64)
 
     backward_kernel[(T_c, )](
             Q, K, V, O,
             dQ, dK, dV, dO,
             l, m,
-            _lock_dQ,
+            _lock_dQ, _written_dQ,
             T_c,
             T_r,
             N,
@@ -242,7 +244,7 @@ def backward_kernel(
         Q_ptr, K_ptr, V_ptr, O_ptr,
         dQ_ptr, dK_ptr, dV_ptr, dO_ptr,
         l_ptr, m_ptr,
-        _lock_dQ,
+        lock_dQ, written_dQ,
         T_c: tl.constexpr,
         T_r: tl.constexpr,
         N: tl.constexpr,
@@ -332,6 +334,8 @@ def backward_kernel(
                 (i * B_r, 0),
                 (B_r, 1),
                 ORDER)
+        lock_dQ_i = lock_dQ + i
+        written_dQ_i = written_dQ + i
 
         # Load *_i blocks
         Q_i = tl.load(Q_i_ptr)
@@ -352,30 +356,27 @@ def backward_kernel(
 
         dS_ij = P_ij * (dP_ij - D_i)
 
-        # TODO
-        # with lock_dQ:
-            # dQ_i = tl.load(dQ_i_ptr) + tl.dot(tl.trans(dS_ij), K_j)
-            # tl.store(dQ_i_ptr, dQ_i)
-        # (somehow release the lock)
-        # Main problem: Somehow establish inter thread communication to ensure
-        # only one thread at a time can add to dQ_i.
-        # Flash Attention v2 paper says they simply used atomic adds for this.
-        # Probably only for communication and not for atomically adding every element
-        # individually.
-        # Figure out how to abuse atomic_add (or maybe better: atomic_cas?) to
-        # implement locks for dQ_i.
-
-        # Idea: something like:
-        # while 0 == tl.atomic_cas(...):
-        #     pass
-        # Then we have the lock.
-
-        # Or, figure out what memory semantics mean with atomic ops,
-        # and if acquire means that all other threads wait with executing their
-        # atomic op until this thread does atomic_cas again with release memory semantic,
-        # and some other thread can acquire?
-
         dK_j = dK_j + tl.dot(tl.trans(dS_ij), Q_i)
+
+        # Writes to dQ_i need to be guarded, since multiple threads can try to do this at the
+        # same time, leading to race conditions.
+        # The below code guardes against this using a locking strategy to ensure
+        # only one thread can update dQ_i at a time.
+        while tl.atomic_cas(lock_dQ_i, 0, 1) == 1:
+            # Wait for the lock to be released, and acquire it if it's released.
+            pass
+        # ============== dQ_i (and written_dQ_i) Mem access is protected by a lock in this snippet.
+        if tl.atomic_xchg(written_dQ_i, 1) == 1:
+            # dQ_i was written to before
+            dQ_i = tl.load(dQ_i_ptr)
+        else:
+            # dQ_i was not written before, so it is uninitialized
+            dQ_i = tl.zeros_like(Q_i)
+        dQ_i = dQ_i + tl.dot(tl.trans(dS_ij), K_j)
+        tl.store(dQ_i_ptr, dQ_i)
+        # ==============
+        # Release the lock again
+        tl.atomic_xchg(lock_dQ_i, 0)
 
     tl.store(dK_j_ptr, dK_j)
     tl.store(dV_j_ptr, dV_j)
