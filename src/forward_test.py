@@ -1,4 +1,4 @@
-from flash_attention_v1 import flash_attention_forward
+from flash_attention import flash_attention_forward
 import torch
 
 N = 256
