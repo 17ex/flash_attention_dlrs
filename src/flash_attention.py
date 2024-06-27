@@ -191,9 +191,9 @@ def flash_attention_backward(
         V,
         O,
         dO,
-        l,
-        m,
+        L,
         M,
+        dev
         ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     assert Q.dim_order() == ORDER and K.dim_order() == ORDER and V.dim_order() == ORDER
     assert Q.shape ==  K.shape  and V.shape == K.shape
@@ -223,13 +223,13 @@ def flash_attention_backward(
     dK = torch.empty_like(K)
     dV = torch.empty_like(V)
     # int64 because atomic ops pointers only work on aligned memory
-    _lock_dQ = torch.zeros(T_r, dtype=torch.int64)
-    _written_dQ = torch.zeros(T_r, dtype=torch.int64)
+    _lock_dQ = torch.zeros(T_r, dtype=torch.int64, device=dev)
+    _written_dQ = torch.zeros(T_r, dtype=torch.int64, device=dev)
 
     backward_kernel[(T_c, )](
             Q, K, V, O,
             dQ, dK, dV, dO,
-            l, m,
+            L,
             _lock_dQ, _written_dQ,
             T_c,
             T_r,
@@ -246,7 +246,7 @@ def flash_attention_backward(
 def backward_kernel(
         Q_ptr, K_ptr, V_ptr, O_ptr,
         dQ_ptr, dK_ptr, dV_ptr, dO_ptr,
-        l_ptr, m_ptr,
+        L_ptr,
         lock_dQ, written_dQ,
         T_c: tl.constexpr,
         T_r: tl.constexpr,
@@ -323,15 +323,8 @@ def backward_kernel(
                 (i * B_r, 0),
                 (B_r, d),
                 ORDER)
-        l_i_ptr = tl.make_block_ptr(
-                l_ptr,
-                (N, 1),
-                (1, 1),
-                (i * B_r, 0),
-                (B_r, 1),
-                ORDER)
-        m_i_ptr = tl.make_block_ptr(
-                m_ptr,
+        L_i_ptr = tl.make_block_ptr(
+                L_ptr,
                 (N, 1),
                 (1, 1),
                 (i * B_r, 0),
@@ -344,12 +337,11 @@ def backward_kernel(
         Q_i = tl.load(Q_i_ptr)
         O_i = tl.load(O_i_ptr)
         dO_i = tl.load(dO_i_ptr)
-        l_i = tl.load(l_i_ptr)
-        m_i = tl.load(m_i_ptr)
+        L_i = tl.load(L_i_ptr)
 
         S_ij = tl.dot(Q_i, tl.trans(K_j), input_precision=DOT_PRECISION)
 
-        P_ij = tl.exp(S_ij - m_i) / l_i
+        P_ij = tl.exp(S_ij - L_i)
 
         dV_j = dV_j + tl.dot(tl.trans(P_ij), dO_i, input_precision=DOT_PRECISION)
 

@@ -14,18 +14,25 @@ TODO
 
 ## Plans
 
-- finish forward pass, ie.
-    - test for correctness
-    - benchmark
-        - against other implementations, mainly, as of now,
-            torch's Attention implementation
-        - see if speedup is as expected
-        - compare with other Flash Attention implementations
-    - implement backward pass
-    - write a torch module or function for this
-    - implement Flash Attention v2
-        - I hope I can finish this before the deadline
-    - Future:
-        - implement dropout, masking, other functions etc. fused in the kernel.
+- Forward pass:
+    - Change math stuff in inner loop to save some calculations
+        - Aka use the proper Flash Attention 2 inner loop
+- benchmark
+    - against other implementations, mainly, as of now,
+        torch's Attention implementation
+    - see if speedup is as expected
+    - compare with other Flash Attention implementations
+- implement backward pass
+    - WIP
+- write a torch module or function for this
+- Future:
+    - implement dropout, masking, other functions etc. fused in the kernel.
+
+
+## Current issues
+
+- Memory requirements etc. incorrect
+- Forward pass not proper flash attention 2
+- Backward pass is WIP
 
 ## Further Resources

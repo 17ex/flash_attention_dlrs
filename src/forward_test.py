@@ -1,8 +1,9 @@
-from flash_attention import flash_attention_forward
+from flash_attention import flash_attention_forward, flash_attention_backward
+from flash_attention_openai_tutorial import attention as openai_attention
 import torch
 
 N = 256
-d = 123
+d = 128
 NUM_TESTS = 100
 
 # NVIDIA GA102 GPUs
@@ -10,6 +11,8 @@ NUM_TESTS = 100
 SRAM = 64 * 1024 # Something is wrong either here or later on. Hotfix
         # TODO Either this value is wrong, some calculation later on,
         # or I'm using more memory than I should.
+# Based on triton.runtime.errors.OutOfResources message,
+# it seems this is actually just 99*1024 ?
 
 gpu = torch.device('cuda')
 
@@ -30,12 +33,30 @@ for test in range(NUM_TESTS):
             M=SRAM,
             dev=gpu
             )
+    # O_openai = openai_attention(Q[None, None, :, :].to(dtype=torch.float16), K[None, None, :, :].to(dtype=torch.float16), V[None, None, :, :].to(dtype=torch.float16), False, 1.0)
     # Requires very large absolute tolerances. Why? Inexact exp maybe?
     if torch.allclose(O_torch, O_flash, atol=1e-4, rtol=1e-5):
         test_result[test] = 1
     else:
         print(O_torch)
         print(O_flash)
+        # print(Q@K.T)
+        # print(O_openai)
+
+    dO = torch.randn_like(O_torch)
+
+    flash_attention_backward(
+            Q,
+            K,
+            V,
+            O_flash,
+            dO,
+            L_flash,
+            M=SRAM,
+            dev=gpu
+            )
+
+
 
 if torch.all(test_result):
     print(f"All {NUM_TESTS} test runs were completed successfully!")
