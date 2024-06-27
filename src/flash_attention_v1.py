@@ -5,6 +5,8 @@ import triton.language as tl
 FP32_BYTESIZE = 4 # TODO future: accomodate other types than float32.
 DTYPE = torch.float32
 
+DOT_PRECISION: tl.constexpr = "ieee"
+
 ORDER: tl.constexpr = (0, 1) # Hardcode for now. Maybe extend to other dim orders later.
 
 def cdiv(a, b):
@@ -139,7 +141,7 @@ def forward_kernel(
         V_j = tl.load(V_j_ptr)
 
         # Compute Q_i K_j^T (line 9)
-        S_ij = tl.dot(Q_i, tl.trans(K_j))
+        S_ij = tl.dot(Q_i, tl.trans(K_j), input_precision=DOT_PRECISION)
 
         # Verify S_ij is of shape (B_r, B_c) at compile time.
         # TODO this did not work with a tuple, hence the two checks.
@@ -162,7 +164,7 @@ def forward_kernel(
 
         # Calculate new O_i (line 12)
         O_i = (l_i * tl.exp(m_i - m_i_new) * O_i
-               + tl.exp(ms_ij - m_i_new) * tl.dot(Ps_ij, V_j)) \
+               + tl.exp(ms_ij - m_i_new) * tl.dot(Ps_ij, V_j, input_precision=DOT_PRECISION)) \
                        / l_i_new
 
         # Overwrite old l_i, m_i (line 13)
@@ -345,19 +347,19 @@ def backward_kernel(
         l_i = tl.load(l_i_ptr)
         m_i = tl.load(m_i_ptr)
 
-        S_ij = tl.dot(Q_i, tl.trans(K_j))
+        S_ij = tl.dot(Q_i, tl.trans(K_j), input_precision=DOT_PRECISION)
 
         P_ij = tl.exp(S_ij - m_i) / l_i
 
-        dV_j = dV_j + tl.dot(tl.trans(P_ij), dO_i)
+        dV_j = dV_j + tl.dot(tl.trans(P_ij), dO_i, input_precision=DOT_PRECISION)
 
-        dP_ij = tl.dot(dO_i, tl.trans(V_j))
+        dP_ij = tl.dot(dO_i, tl.trans(V_j), input_precision=DOT_PRECISION)
 
         D_i = tl.sum(dO_i * O_i, axis=1, keep_dims=True)
 
         dS_ij = P_ij * (dP_ij - D_i)
 
-        dK_j = dK_j + tl.dot(tl.trans(dS_ij), Q_i)
+        dK_j = dK_j + tl.dot(tl.trans(dS_ij), Q_i, input_precision=DOT_PRECISION)
 
         # Writes to dQ_i need to be guarded, since multiple threads can try to do this at the
         # same time, leading to race conditions.
@@ -373,7 +375,7 @@ def backward_kernel(
         else:
             # dQ_i was not written before, so it is uninitialized
             dQ_i = tl.zeros_like(Q_i)
-        dQ_i = dQ_i + tl.dot(tl.trans(dS_ij), K_j)
+        dQ_i = dQ_i + tl.dot(tl.trans(dS_ij), K_j, input_precision=DOT_PRECISION)
         tl.store(dQ_i_ptr, dQ_i)
         # ==============
         # Release the lock again

@@ -31,7 +31,7 @@ for test in range(NUM_TESTS):
             dev=gpu
             )
     # Requires very large absolute tolerances. Why? Inexact exp maybe?
-    if torch.allclose(O_torch, O_flash, atol=1e-1, rtol=1e-5):
+    if torch.allclose(O_torch, O_flash, atol=1e-4, rtol=1e-5):
         test_result[test] = 1
     else:
         print(O_torch)
