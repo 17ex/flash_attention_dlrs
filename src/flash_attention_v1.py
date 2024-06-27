@@ -90,7 +90,7 @@ def forward_kernel(
 
     i = tl.program_id(axis=0) # TODO Batched. Currently non-batched only.
 
-    # Create pointers to all *_i blocks (line 8)
+    # Initialize all block pointers
     Q_i_ptr = tl.make_block_ptr(
             Q_ptr,
             (N, d),
@@ -112,6 +112,20 @@ def forward_kernel(
             (i * B_r, 0),
             (B_r, 1),
             ORDER)
+    K_j_ptr = tl.make_block_ptr(
+            K_ptr,
+            (N, d),
+            (d, 1),
+            (0, 0),
+            (B_c, d),
+            ORDER)
+    V_j_ptr = tl.make_block_ptr(
+            V_ptr,
+            (N, d),
+            (d, 1),
+            (0, 0),
+            (B_c, d),
+            ORDER)
 
     Q_i = tl.load(Q_i_ptr)
     # The other values only need to be stored (at the end),
@@ -121,22 +135,6 @@ def forward_kernel(
     l_i= tl.zeros_like(m_i)
 
     for j in range(T_c):
-
-        # Create pointers and load the *_j blocks (line 6)
-        K_j_ptr = tl.make_block_ptr(
-                K_ptr,
-                (N, d),
-                (d, 1),
-                (j * B_c, 0),
-                (B_c, d),
-                ORDER)
-        V_j_ptr = tl.make_block_ptr(
-                V_ptr,
-                (N, d),
-                (d, 1),
-                (j * B_c, 0),
-                (B_c, d),
-                ORDER)
         K_j = tl.load(K_j_ptr)
         V_j = tl.load(V_j_ptr)
 
@@ -170,6 +168,9 @@ def forward_kernel(
         # Overwrite old l_i, m_i (line 13)
         l_i = l_i_new
         m_i = m_i_new
+
+        K_j_ptr = tl.advance(K_j_ptr, (B_c, 0))
+        V_j_ptr = tl.advance(V_j_ptr, (B_c, 0))
 
     # This loop/kernel is done (looped over all j for this i),
     # store the results and exit
