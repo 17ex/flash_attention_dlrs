@@ -222,9 +222,15 @@ def flash_attention_backward(
     dQ = torch.empty_like(Q)
     dK = torch.empty_like(K)
     dV = torch.empty_like(V)
-    # int64 because atomic ops pointers only work on aligned memory
-    _lock_dQ = torch.zeros(T_r, dtype=torch.int64, device=dev)
-    _written_dQ = torch.zeros(T_r, dtype=torch.int64, device=dev)
+    # int64 would make more sense here,
+    # because atomic ops pointers only work on aligned memory,
+    # but I need to compare with constexprs, and then the compiler
+    # complains because it can't compare int64 with int32,
+    # and I don't know how to specify that a literal should be an
+    # int64 and not int32. I don't even know if you can do this easily.
+    # So, instead we double the length, and only index every 2nd element.
+    _lock_dQ = torch.zeros(2 * T_r, dtype=torch.int32, device=dev)
+    _written_dQ = torch.zeros(2 * T_r, dtype=torch.int32, device=dev)
 
     backward_kernel[(T_c, )](
             Q, K, V, O,
@@ -359,15 +365,25 @@ def backward_kernel(
         # only one thread can update dQ_i at a time.
         while tl.atomic_cas(lock_dQ_i, 0, 1) == 1:
             # Wait for the lock to be released, and acquire it if it's released.
+            tl.device_print("TODO: delete me")
+            # TODO
+            # For some reason, if this device print is not here, then this kernel will hang.
+            # This probably has something to do with an empty while loop?
+            # Figure out why or if I'm doing something wrong, or put some dummy noop here.
+            # In the tutorials, this while: pass is used just like here. So it should (?) work.
+            # Maybe check if the tutorial code yields the same problem.
             pass
         # ============== dQ_i (and written_dQ_i) Mem access is protected by a lock in this snippet.
-        if tl.atomic_xchg(written_dQ_i, 1) == 1:
-            # dQ_i was written to before
-            dQ_i = tl.load(dQ_i_ptr)
-        else:
+        count = tl.load(written_dQ_i)
+        if count == 0:
+        # if tl.atomic_xchg(written_dQ_i, 1) == 1:
             # dQ_i was not written before, so it is uninitialized
             dQ_i = tl.zeros_like(Q_i)
-        dQ_i = dQ_i + tl.dot(tl.trans(dS_ij), K_j, input_precision=DOT_PRECISION)
+            tl.atomic_xchg(written_dQ_i, 1)
+        else:
+            # dQ_i was written to before
+            dQ_i = tl.load(dQ_i_ptr)
+        dQ_i = dQ_i + tl.dot(dS_ij, K_j, input_precision=DOT_PRECISION)
         tl.store(dQ_i_ptr, dQ_i)
         # ==============
         # Release the lock again
