@@ -16,13 +16,14 @@ SRAM = 64 * 1024 # Something is wrong either here or later on. Hotfix
 
 gpu = torch.device('cuda')
 
-test_result = torch.zeros(NUM_TESTS)
+test_result_fwd = torch.zeros(NUM_TESTS, dtype=torch.int32)
+test_result_bwd = torch.zeros(NUM_TESTS, dtype=torch.int32)
 
 for test in range(NUM_TESTS):
     torch.manual_seed(test)
-    Q = torch.randn(N, d, device=gpu)
-    K = torch.randn(N, d, device=gpu)
-    V = torch.randn(N, d, device=gpu)
+    Q = torch.randn(N, d, device=gpu, requires_grad=True)
+    K = torch.randn(N, d, device=gpu, requires_grad=True)
+    V = torch.randn(N, d, device=gpu, requires_grad=True)
     O_torch = torch.nn.functional.scaled_dot_product_attention(Q, K, V, scale=1)
     O_flash, L_flash = flash_attention_forward(
             Q,
@@ -34,9 +35,8 @@ for test in range(NUM_TESTS):
             dev=gpu
             )
     # O_openai = openai_attention(Q[None, None, :, :].to(dtype=torch.float16), K[None, None, :, :].to(dtype=torch.float16), V[None, None, :, :].to(dtype=torch.float16), False, 1.0)
-    # Requires very large absolute tolerances. Why? Inexact exp maybe?
     if torch.allclose(O_torch, O_flash, atol=1e-4, rtol=1e-5):
-        test_result[test] = 1
+        test_result_fwd[test] = 1
     else:
         print(O_torch)
         print(O_flash)
@@ -45,7 +45,9 @@ for test in range(NUM_TESTS):
 
     dO = torch.randn_like(O_torch)
 
-    flash_attention_backward(
+    dQ_torch, dK_torch, dV_torch = torch.autograd.grad(O_torch, (Q, K, V), dO)
+
+    dQ_flash, dK_flash, dV_flash = flash_attention_backward(
             Q,
             K,
             V,
@@ -56,9 +58,14 @@ for test in range(NUM_TESTS):
             dev=gpu
             )
 
+    test_result_bwd[test] = (
+            torch.allclose(dQ_torch, dQ_flash, atol=1e-4, rtol=1e-5) and
+            torch.allclose(dK_torch, dK_flash, atol=1e-4, rtol=1e-5) and
+            torch.allclose(dV_torch, dV_flash, atol=1e-4, rtol=1e-5)
+            )
 
+    # TODO
+    # only 87 tests are successful. Increase tolerances or see if there's some other problem.
 
-if torch.all(test_result):
-    print(f"All {NUM_TESTS} test runs were completed successfully!")
-else:
-    print("Errors occurred!")
+print(f"{test_result_fwd.sum().item()} out of {NUM_TESTS} forward tests succeeded!")
+print(f"{test_result_bwd.sum().item()} out of {NUM_TESTS} backward tests succeeded!")
