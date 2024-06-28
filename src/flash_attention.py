@@ -223,11 +223,12 @@ def flash_attention_backward(
         M,
         dev
         ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    assert Q.dim_order() == ORDER and K.dim_order() == ORDER and V.dim_order() == ORDER
+
+    assert Q.dim() == 4
     assert Q.shape ==  K.shape  and V.shape == K.shape
     assert Q.dtype == DTYPE and K.dtype == DTYPE and V.dtype == DTYPE
 
-    N, d = Q.shape[-2:]
+    B, H, N, d = Q.shape
 
     d_pow = triton.next_power_of_2(d)
 
@@ -257,15 +258,37 @@ def flash_attention_backward(
     # and I don't know how to specify that a literal should be an
     # int64 and not int32. I don't even know if you can do this easily.
     # So, instead we double the length, and only index every 2nd element.
-    _lock_dQ = torch.zeros(2 * T_r, dtype=torch.int32, device=dev)
-    _written_dQ = torch.zeros(2 * T_r, dtype=torch.int32, device=dev)
+    _lock_dQ = torch.zeros(B, H, 2 * T_r, dtype=torch.int32, device=dev)
+    _written_dQ = torch.zeros(B, H, 2 * T_r, dtype=torch.int32, device=dev)
 
-    backward_kernel[(T_c, )](
+    QB_stride, QH_stride, QN_stride, Qd_stride = Q.stride()
+    KB_stride, KH_stride, KN_stride, Kd_stride = K.stride()
+    VB_stride, VH_stride, VN_stride, Vd_stride = V.stride()
+    OB_stride, OH_stride, ON_stride, Od_stride = O.stride()
+    dQB_stride, dQH_stride, dQN_stride, dQd_stride = dQ.stride()
+    dKB_stride, dKH_stride, dKN_stride, dKd_stride = dK.stride()
+    dVB_stride, dVH_stride, dVN_stride, dVd_stride = dV.stride()
+    dOB_stride, dOH_stride, dON_stride, dOd_stride = dO.stride()
+    LB_stride, LH_stride, LN_stride, _ = L.stride()
+    _lock_dQ_B_stride, _lock_dQ_H_stride, _ = _lock_dQ.stride()
+    _written_dQ_B_stride, _written_dQ_H_stride, _ = _written_dQ.stride()
+
+    backward_kernel[(B, H, T_c)](
             Q, K, V, O,
             dQ, dK, dV, dO,
             L,
             _lock_dQ, _written_dQ,
-            T_c,
+            QB_stride, QH_stride, QN_stride, Qd_stride,
+            KB_stride, KH_stride, KN_stride, Kd_stride,
+            VB_stride, VH_stride, VN_stride, Vd_stride,
+            OB_stride, OH_stride, ON_stride, Od_stride,
+            dQB_stride, dQH_stride, dQN_stride, dQd_stride,
+            dKB_stride, dKH_stride, dKN_stride, dKd_stride,
+            dVB_stride, dVH_stride, dVN_stride, dVd_stride,
+            dOB_stride, dOH_stride, dON_stride, dOd_stride,
+            LB_stride, LH_stride, LN_stride,
+            _lock_dQ_B_stride, _lock_dQ_H_stride,
+            _written_dQ_B_stride, _written_dQ_H_stride,
             T_r,
             N,
             d,
@@ -282,7 +305,17 @@ def backward_kernel(
         dQ_ptr, dK_ptr, dV_ptr, dO_ptr,
         L_ptr,
         lock_dQ, written_dQ,
-        T_c: tl.constexpr,
+        QB_stride, QH_stride, QN_stride, Qd_stride,
+        KB_stride, KH_stride, KN_stride, Kd_stride,
+        VB_stride, VH_stride, VN_stride, Vd_stride,
+        OB_stride, OH_stride, ON_stride, Od_stride,
+        dQB_stride, dQH_stride, dQN_stride, dQd_stride,
+        dKB_stride, dKH_stride, dKN_stride, dKd_stride,
+        dVB_stride, dVH_stride, dVN_stride, dVd_stride,
+        dOB_stride, dOH_stride, dON_stride, dOd_stride,
+        LB_stride, LH_stride, LN_stride, # TODO LN_stride should be 1
+        lock_dQ_B_stride, lock_dQ_H_stride,
+        written_dQ_B_stride, written_dQ_H_stride,
         T_r: tl.constexpr,
         N: tl.constexpr,
         d: tl.constexpr,
@@ -290,82 +323,84 @@ def backward_kernel(
         B_r: tl.constexpr
         ) -> None:
 
-    # Loop over j < T_c first (parallel over different kernel launches),
-    # and have the inner loop over i < T_r within each kernel
-    j = tl.program_id(axis=0)
+    b = tl.program_id(axis=0)
+    h = tl.program_id(axis=1)
+    j = tl.program_id(axis=2)
+
     # Create pointers and load the *_j blocks (line 6)
     K_j_ptr = tl.make_block_ptr(
-            K_ptr,
+            K_ptr + b * KB_stride + h * KH_stride,
             (N, d),
-            (d, 1),
+            (KN_stride, Kd_stride),
             (j * B_c, 0),
             (B_c, d),
             ORDER)
     V_j_ptr = tl.make_block_ptr(
-            V_ptr,
+            V_ptr + b * VB_stride + h * VH_stride,
             (N, d),
-            (d, 1),
+            (VN_stride, Vd_stride),
             (j * B_c, 0),
             (B_c, d),
             ORDER)
     dK_j_ptr = tl.make_block_ptr(
-            dK_ptr,
+            dK_ptr + b * dKB_stride + h * dKH_stride,
             (N, d),
-            (d, 1),
+            (dKN_stride, dKd_stride),
             (j * B_c, 0),
             (B_c, d),
             ORDER)
     dV_j_ptr = tl.make_block_ptr(
-            dV_ptr,
+            dV_ptr + b * dVB_stride + h * dVH_stride,
             (N, d),
-            (d, 1),
+            (dVN_stride, dVd_stride),
             (j * B_c, 0),
             (B_c, d),
             ORDER)
+    Q_i_ptr = tl.make_block_ptr(
+            Q_ptr + b * QB_stride + h * QH_stride,
+            (N, d),
+            (QN_stride, Qd_stride),
+            (0, 0),
+            (B_r, d),
+            ORDER)
+    O_i_ptr = tl.make_block_ptr(
+            O_ptr + b * OB_stride + h * OH_stride,
+            (N, d),
+            (ON_stride, Od_stride),
+            (0, 0),
+            (B_r, d),
+            ORDER)
+    dO_i_ptr = tl.make_block_ptr(
+            dO_ptr + b * dOB_stride + h * dOH_stride,
+            (N, d),
+            (dON_stride, dOd_stride),
+            (0, 0),
+            (B_r, d),
+            ORDER)
+    dQ_i_ptr = tl.make_block_ptr(
+            dQ_ptr + b * dQB_stride + h * dQH_stride,
+            (N, d),
+            (dQN_stride, dQd_stride),
+            (0, 0),
+            (B_r, d),
+            ORDER)
+    L_i_ptr = tl.make_block_ptr(
+            L_ptr + b * LB_stride + h * LH_stride,
+            (N, 1),
+            (LN_stride, 1),
+            (0, 0),
+            (B_r, 1),
+            ORDER)
+
     K_j = tl.load(K_j_ptr)
     V_j = tl.load(V_j_ptr)
     dK_j = tl.zeros_like(K_j)
     dV_j = tl.zeros_like(V_j)
 
-    for i in range(T_r):
-        # def. *_i ptrs
-        Q_i_ptr = tl.make_block_ptr(
-                Q_ptr,
-                (N, d),
-                (d, 1),
-                (i * B_r, 0),
-                (B_r, d),
-                ORDER)
-        O_i_ptr = tl.make_block_ptr(
-                O_ptr,
-                (N, d),
-                (d, 1),
-                (i * B_r, 0),
-                (B_r, d),
-                ORDER)
-        dO_i_ptr = tl.make_block_ptr(
-                dO_ptr,
-                (N, d),
-                (d, 1),
-                (i * B_r, 0),
-                (B_r, d),
-                ORDER)
-        dQ_i_ptr = tl.make_block_ptr(
-                dQ_ptr,
-                (N, d),
-                (d, 1),
-                (i * B_r, 0),
-                (B_r, d),
-                ORDER)
-        L_i_ptr = tl.make_block_ptr(
-                L_ptr,
-                (N, 1),
-                (1, 1),
-                (i * B_r, 0),
-                (B_r, 1),
-                ORDER)
-        lock_dQ_i = lock_dQ + i
-        written_dQ_i = written_dQ + i
+    lock_dQ_i = lock_dQ + b * lock_dQ_B_stride + h * lock_dQ_H_stride
+    written_dQ_i = written_dQ + b * written_dQ_B_stride + h * written_dQ_H_stride
+
+    for _ in range(T_r):
 
         # Load *_i blocks
         Q_i = tl.load(Q_i_ptr)
@@ -409,7 +444,16 @@ def backward_kernel(
         # Release the lock again
         tl.atomic_xchg(lock_dQ_i, 0)
 
+        # Advance the *_i_ptrs
+        Q_i_ptr = tl.advance(Q_i_ptr, (B_r, 0))
+        O_i_ptr = tl.advance(O_i_ptr, (B_r, 0))
+        dO_i_ptr = tl.advance(dO_i_ptr, (B_r, 0))
+        dQ_i_ptr = tl.advance(dQ_i_ptr, (B_r, 0))
+        L_i_ptr = tl.advance(L_i_ptr, (B_r, 0))
+        lock_dQ_i += 1
+        written_dQ_i += 1
+
+
     tl.store(dK_j_ptr, dK_j)
     tl.store(dV_j_ptr, dV_j)
-
     return
