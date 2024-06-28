@@ -364,14 +364,6 @@ def backward_kernel(
         # The below code guardes against this using a locking strategy to ensure
         # only one thread can update dQ_i at a time.
         while tl.atomic_cas(lock_dQ_i, 0, 1) == 1:
-            # Wait for the lock to be released, and acquire it if it's released.
-            tl.device_print("TODO: delete me")
-            # TODO
-            # For some reason, if this device print is not here, then this kernel will hang.
-            # This probably has something to do with an empty while loop?
-            # Figure out why or if I'm doing something wrong, or put some dummy noop here.
-            # In the tutorials, this while: pass is used just like here. So it should (?) work.
-            # Maybe check if the tutorial code yields the same problem.
             pass
         # ============== dQ_i (and written_dQ_i) Mem access is protected by a lock in this snippet.
         count = tl.load(written_dQ_i)
