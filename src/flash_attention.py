@@ -12,21 +12,30 @@ ORDER: tl.constexpr = (0, 1) # Hardcode for now. Maybe extend to other dim order
 def cdiv(a, b):
     return (a + b - 1) // b
 
+# TODO
+# Use tl.autotune for forward_kernel (and backward),
+# and get rid of the M parameter here.
 def flash_attention_forward(
         Q,
         K,
         V,
-        N, # Number of rows of Q,K,V
-        d, # Number of columns of Q,K,V
         M, # SRAM size
         dev
         ):
 
-    assert Q.dim_order() == ORDER and K.dim_order() == ORDER and V.dim_order() == ORDER
-    shape = torch.Size([N, d])
-    assert Q.shape == shape and K.shape == shape and V.shape == shape
+    # Takes tensors of shape (B, H, N, d), where
+    # B: Batch size
+    # H: Number of attention heads
+    # N: Context size
+    # d: Token dimension
+
+    assert Q.dim() == 4
+    assert Q.shape == K.shape and K.shape == V.shape
     assert Q.dtype == DTYPE and K.dtype == DTYPE and V.dtype == DTYPE
 
+    B, H, N, d = Q.shape
+
+    # Support for non-power-of-2 d
     d_pow = triton.next_power_of_2(d)
 
     if d_pow != d:
@@ -38,24 +47,35 @@ def flash_attention_forward(
 
     # TODO
     # When writing a module, these can be changed into module properties
-    # L: 1 (Determine block sizes)
+    # Determine block sizes
     rows_bytesize = FP32_BYTESIZE * d_pow * 4 # Assuming FP32
     block_size = cdiv(M, rows_bytesize)
-    B_c = min(block_size, N) # TODO verify whether this min is okay, it's not in the algorithm.
-    B_r = min(block_size, d_pow) # Should make sense though.
+    B_c = min(block_size, N)
+    B_r = min(block_size, d_pow)
     T_r = cdiv(N, B_r)
     T_c = cdiv(N, B_c)
 
-    # L: 2 (Initialize output and statistics)
-    O = torch.empty(N, d_pow, dtype=DTYPE, device=dev)
-    L = torch.empty(N, 1, dtype=DTYPE, device=dev)
+    # Initialize output and statistics
+    O = torch.empty(B, H, N, d_pow, dtype=DTYPE, device=dev)
+    L = torch.empty(B, H, N, 1, dtype=DTYPE, device=dev)
 
-    forward_kernel[(T_r, )](
+    QB_stride, QH_stride, QN_stride, Qd_stride = Q.stride()
+    KB_stride, KH_stride, KN_stride, Kd_stride = K.stride()
+    VB_stride, VH_stride, VN_stride, Vd_stride = V.stride()
+    OB_stride, OH_stride, ON_stride, Od_stride = O.stride()
+    LB_stride, LH_stride, LN_stride, _ = L.stride()
+
+    forward_kernel[(B, H, T_r)](
             Q,
-            O,
-            L,
             K,
             V,
+            O,
+            L,
+            QB_stride, QH_stride, QN_stride, Qd_stride,
+            KB_stride, KH_stride, KN_stride, Kd_stride,
+            VB_stride, VH_stride, VN_stride, Vd_stride,
+            OB_stride, OH_stride, ON_stride, Od_stride,
+            LB_stride, LH_stride, LN_stride,
             T_c,
             T_r,
             N,
@@ -71,10 +91,15 @@ def flash_attention_forward(
 @triton.jit
 def forward_kernel(
         Q_ptr,
-        O_ptr,
-        L_ptr,
         K_ptr,
         V_ptr,
+        O_ptr,
+        L_ptr,
+        QB_stride, QH_stride, QN_stride, Qd_stride,
+        KB_stride, KH_stride, KN_stride, Kd_stride,
+        VB_stride, VH_stride, VN_stride, Vd_stride,
+        OB_stride, OH_stride, ON_stride, Od_stride,
+        LB_stride, LH_stride, LN_stride,
         T_c: tl.constexpr,
         T_r: tl.constexpr,
         N: tl.constexpr,
@@ -82,49 +107,52 @@ def forward_kernel(
         B_c: tl.constexpr,
         B_r: tl.constexpr
         ):
-
     tl.static_print(f"JIT-compiling flash attention v1 forward kernel for:")
     tl.static_print(f"B_c={B_c}, B_r={B_r}, T_r={T_r}, T_c={T_c}, N={N}, d={d}")
-    # This performs one iteration of the outer loop.
-    # Note that the loops are swapped compared to Algorithm 1 in the
-    # Flash Attention V1 paper, so this is run for one i,
-    # 1 <= i <= T_r, with the loop over j inside.
 
-    i = tl.program_id(axis=0) # TODO Batched. Currently non-batched only.
+    # This performs one iteration of the outer loop of Flash Attention 2 (more or less)
+
+    # Determine which on batch/head number and i of the outer loop
+    # this kernel should operate on
+    b = tl.program_id(axis=0)
+    h = tl.program_id(axis=1)
+    i = tl.program_id(axis=2)
 
     # Initialize all block pointers
+    # TODO order is probably for the block, not for the parent?
+    # -> have constant order and use order for transposing
     Q_i_ptr = tl.make_block_ptr(
-            Q_ptr,
+            Q_ptr + b * QB_stride + h * QH_stride,
             (N, d),
-            (d, 1),
+            (QN_stride, Qd_stride),
             (i * B_r, 0),
             (B_r, d),
             ORDER)
     O_i_ptr = tl.make_block_ptr(
-            O_ptr,
+            O_ptr + b * OB_stride + h * OH_stride,
             (N, d),
-            (d, 1),
+            (ON_stride, Od_stride),
             (i * B_r, 0),
             (B_r, d),
             ORDER)
     L_i_ptr = tl.make_block_ptr(
-            L_ptr,
+            L_ptr + b * LB_stride + h * LH_stride,
             (N, 1),
-            (1, 1),
+            (LN_stride, 1),
             (i * B_r, 0),
             (B_r, 1),
             ORDER)
     K_j_ptr = tl.make_block_ptr(
-            K_ptr,
+            K_ptr + b * KB_stride + h * KH_stride,
             (N, d),
-            (d, 1),
+            (KN_stride, Kd_stride),
             (0, 0),
             (B_c, d),
             ORDER)
     V_j_ptr = tl.make_block_ptr(
-            V_ptr,
+            V_ptr + b * VB_stride + h * VH_stride,
             (N, d),
-            (d, 1),
+            (VN_stride, Vd_stride),
             (0, 0),
             (B_c, d),
             ORDER)
@@ -180,7 +208,7 @@ def forward_kernel(
     # whatever function called this should ensure to only read the appropriate sub-tensor
     L_i = m_i + tl.log(l_i)
     tl.store(O_i_ptr, O_i)
-    tl.store(L_i_ptr, L_i) # TODO Check if you can get away with not masking L_i
+    tl.store(L_i_ptr, L_i)
     return
 
 
