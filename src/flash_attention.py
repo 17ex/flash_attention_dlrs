@@ -48,10 +48,9 @@ def flash_attention_forward(
     # Determine block sizes
     rows_bytesize = FP32_BYTESIZE * d_pow * 4 # Assuming FP32
     block_size = cdiv(M, rows_bytesize)
-    B_c = min(block_size, N)
+    B_c = min(block_size, N) # TODO this is now tunable
     B_r = min(block_size, d_pow)
     T_r = cdiv(N, B_r)
-    T_c = cdiv(N, B_c)
 
     # Initialize output and statistics
     O = torch.empty(B, H, N, d_pow, dtype=DTYPE, device=dev)
@@ -74,10 +73,7 @@ def flash_attention_forward(
             VB_stride, VH_stride, VN_stride, Vd_stride,
             OB_stride, OH_stride, ON_stride, Od_stride,
             LB_stride, LH_stride,
-            T_c,
-            T_r,
-            N,
-            d_pow,
+            B, H, N, d_pow,
             B_c,
             B_r
             )
@@ -97,23 +93,20 @@ def forward_kernel(
         VB_stride, VH_stride, VN_stride, Vd_stride,
         OB_stride, OH_stride, ON_stride, Od_stride,
         LB_stride, LH_stride,
-        T_c: tl.constexpr,
-        T_r: tl.constexpr,
-        N: tl.constexpr,
-        d: tl.constexpr,
+        B, H, N, d: tl.constexpr,
         B_c: tl.constexpr,
         B_r: tl.constexpr
         ):
-    tl.static_print(f"JIT-compiling flash attention v1 forward kernel for:")
-    tl.static_print(f"B_c={B_c}, B_r={B_r}, T_r={T_r}, T_c={T_c}, N={N}, d={d}")
-
-    # This performs one iteration of the outer loop of Flash Attention 2 (more or less)
+    # This performs one iteration of the outer loop of FA-2
+    # (more or less, the math is more like in FA-1 as of now)
 
     # Determine which on batch/head number and i of the outer loop
     # this kernel should operate on
     b = tl.program_id(axis=0)
     h = tl.program_id(axis=1)
     i = tl.program_id(axis=2)
+
+    T_c = tl.cdiv(N, B_c)
 
     # Initialize all block pointers
     Q_i_ptr = tl.make_block_ptr(
