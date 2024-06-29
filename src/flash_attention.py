@@ -84,8 +84,7 @@ def flash_attention_forward(
             B_r
             )
 
-    # TODO store l, m? For now, just return
-    return O[:, 0:d], L
+    return O[:, :, :, 0:d], L
 
 
 @triton.jit
