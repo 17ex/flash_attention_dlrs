@@ -4,13 +4,8 @@ import triton.language as tl
 
 FP32_BYTESIZE = 4 # TODO future: accomodate other types than float32.
 DTYPE = torch.float32
-
 DOT_PRECISION: tl.constexpr = "ieee"
-
 ORDER: tl.constexpr = (0, 1)
-
-def cdiv(a, b):
-    return (a + b - 1) // b
 
 # TODO
 # Use tl.autotune for forward_kernel (and backward),
@@ -47,7 +42,7 @@ def flash_attention_forward(
 
     # Determine block sizes
     rows_bytesize = FP32_BYTESIZE * d_pow * 4 # Assuming FP32
-    block_size = cdiv(M, rows_bytesize)
+    block_size = triton.cdiv(M, rows_bytesize)
     B_c = min(block_size, N) # TODO this is now tunable
     B_r = min(block_size, d_pow) # TODO this is now tunable
 
@@ -221,11 +216,11 @@ def flash_attention_backward(
 
     # Determine block sizes
     rows_bytesize = FP32_BYTESIZE * d_pow * 4 # Assuming FP32
-    block_size = cdiv(M, rows_bytesize)
+    block_size = triton.cdiv(M, rows_bytesize)
     B_c = min(block_size, N)
     B_r = min(block_size, d_pow)
-    T_r = cdiv(N, B_r)
-    T_c = cdiv(N, B_c)
+    T_r = triton.cdiv(N, B_r)
+    T_c = triton.cdiv(N, B_c)
     dQ = torch.empty_like(Q)
     dK = torch.empty_like(K)
     dV = torch.empty_like(V)
