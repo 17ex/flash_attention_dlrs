@@ -23,7 +23,10 @@ def is_cuda() -> bool:
 
 def get_fwd_autotune_config_cuda() -> list[triton.Config]:
     return [
-            triton.Config({'B_r': 16, 'B_c': 16}, num_stages=2, num_warps=4), # Failsafe for N < 32
+            triton.Config({'B_r': 16, 'B_c': 16}, num_stages=2, num_warps=4),
+            triton.Config({'B_r': 16, 'B_c': 16}, num_stages=2, num_warps=8),
+            triton.Config({'B_r': 32, 'B_c': 32}, num_stages=2, num_warps=4),
+            triton.Config({'B_r': 32, 'B_c': 32}, num_stages=2, num_warps=8),
             triton.Config({'B_r': 32, 'B_c': 64}, num_stages=2, num_warps=4),
             triton.Config({'B_r': 32, 'B_c': 64}, num_stages=2, num_warps=8),
             triton.Config({'B_r': 32, 'B_c': 64}, num_stages=3, num_warps=4),
