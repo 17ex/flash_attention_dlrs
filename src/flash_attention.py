@@ -7,7 +7,7 @@ DTYPE = torch.float32
 
 DOT_PRECISION: tl.constexpr = "ieee"
 
-ORDER: tl.constexpr = (0, 1) # Hardcode for now. Maybe extend to other dim orders later.
+ORDER: tl.constexpr = (0, 1)
 
 def cdiv(a, b):
     return (a + b - 1) // b
@@ -63,7 +63,7 @@ def flash_attention_forward(
     KB_stride, KH_stride, KN_stride, Kd_stride = K.stride()
     VB_stride, VH_stride, VN_stride, Vd_stride = V.stride()
     OB_stride, OH_stride, ON_stride, Od_stride = O.stride()
-    LB_stride, LH_stride, LN_stride, _ = L.stride()
+    LB_stride, LH_stride, _, _ = L.stride()
 
     forward_kernel[(B, H, T_r)](
             Q,
@@ -75,7 +75,7 @@ def flash_attention_forward(
             KB_stride, KH_stride, KN_stride, Kd_stride,
             VB_stride, VH_stride, VN_stride, Vd_stride,
             OB_stride, OH_stride, ON_stride, Od_stride,
-            LB_stride, LH_stride, LN_stride,
+            LB_stride, LH_stride,
             T_c,
             T_r,
             N,
@@ -98,7 +98,7 @@ def forward_kernel(
         KB_stride, KH_stride, KN_stride, Kd_stride,
         VB_stride, VH_stride, VN_stride, Vd_stride,
         OB_stride, OH_stride, ON_stride, Od_stride,
-        LB_stride, LH_stride, LN_stride,
+        LB_stride, LH_stride,
         T_c: tl.constexpr,
         T_r: tl.constexpr,
         N: tl.constexpr,
@@ -137,7 +137,7 @@ def forward_kernel(
     L_i_ptr = tl.make_block_ptr(
             L_ptr + b * LB_stride + h * LH_stride,
             (N, 1),
-            (LN_stride, 1),
+            (1, 1),
             (i * B_r, 0),
             (B_r, 1),
             ORDER)
@@ -268,7 +268,7 @@ def flash_attention_backward(
     dKB_stride, dKH_stride, dKN_stride, dKd_stride = dK.stride()
     dVB_stride, dVH_stride, dVN_stride, dVd_stride = dV.stride()
     dOB_stride, dOH_stride, dON_stride, dOd_stride = dO.stride()
-    LB_stride, LH_stride, LN_stride, _ = L.stride()
+    LB_stride, LH_stride, _, _ = L.stride()
     _lock_dQ_B_stride, _lock_dQ_H_stride, _ = _lock_dQ.stride()
     _written_dQ_B_stride, _written_dQ_H_stride, _ = _written_dQ.stride()
 
@@ -285,7 +285,7 @@ def flash_attention_backward(
             dKB_stride, dKH_stride, dKN_stride, dKd_stride,
             dVB_stride, dVH_stride, dVN_stride, dVd_stride,
             dOB_stride, dOH_stride, dON_stride, dOd_stride,
-            LB_stride, LH_stride, LN_stride,
+            LB_stride, LH_stride,
             _lock_dQ_B_stride, _lock_dQ_H_stride,
             _written_dQ_B_stride, _written_dQ_H_stride,
             T_r,
@@ -312,7 +312,7 @@ def backward_kernel(
         dKB_stride, dKH_stride, dKN_stride, dKd_stride,
         dVB_stride, dVH_stride, dVN_stride, dVd_stride,
         dOB_stride, dOH_stride, dON_stride, dOd_stride,
-        LB_stride, LH_stride, LN_stride, # TODO LN_stride should be 1
+        LB_stride, LH_stride,
         lock_dQ_B_stride, lock_dQ_H_stride,
         written_dQ_B_stride, written_dQ_H_stride,
         T_r: tl.constexpr,
@@ -386,7 +386,7 @@ def backward_kernel(
     L_i_ptr = tl.make_block_ptr(
             L_ptr + b * LB_stride + h * LH_stride,
             (N, 1),
-            (LN_stride, 1),
+            (1, 1),
             (0, 0),
             (B_r, 1),
             ORDER)
