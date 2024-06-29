@@ -45,8 +45,6 @@ def flash_attention_forward(
         K = torch.nn.functional.pad(K, pad, mode='constant', value=0.0)
         V = torch.nn.functional.pad(V, pad, mode='constant', value=0.0)
 
-    # TODO
-    # When writing a module, these can be changed into module properties
     # Determine block sizes
     rows_bytesize = FP32_BYTESIZE * d_pow * 4 # Assuming FP32
     block_size = cdiv(M, rows_bytesize)
@@ -118,8 +116,6 @@ def forward_kernel(
     i = tl.program_id(axis=2)
 
     # Initialize all block pointers
-    # TODO order is probably for the block, not for the parent?
-    # -> have constant order and use order for transposing
     Q_i_ptr = tl.make_block_ptr(
             Q_ptr + b * QB_stride + h * QH_stride,
             (N, d),
@@ -163,38 +159,29 @@ def forward_kernel(
     m_i= tl.full((B_r, 1), float('-inf'), tl.float32)
     l_i= tl.zeros_like(m_i)
 
-    for j in range(T_c):
+    for _ in range(T_c):
         K_j = tl.load(K_j_ptr)
         V_j = tl.load(V_j_ptr)
 
-        # Compute Q_i K_j^T (line 9)
+        # Compute Q_i K_j^T
         S_ij = tl.dot(Q_i, tl.trans(K_j), input_precision=DOT_PRECISION)
 
-        # Verify S_ij is of shape (B_r, B_c) at compile time.
-        # TODO this did not work with a tuple, hence the two checks.
-        # Check why S_ij.shape == (B_r, B_c) didn't work.
-        tl.static_assert(S_ij.shape[0] == B_r and S_ij.shape[1] == B_c)
+        # Compute m_ij, P_ij, l_ij
+        m_ij = tl.max(S_ij, axis=1, keep_dims=True)
+        P_ij = tl.exp(S_ij - m_ij)
+        l_ij = tl.sum(P_ij, axis=1, keep_dims=True)
 
-        # Compute m~_ij, P~_ij, l~_ij (line 10)
-        ms_ij = tl.max(S_ij, axis=1, keep_dims=True)
-        Ps_ij = tl.exp(S_ij - ms_ij)
-        ls_ij = tl.sum(Ps_ij, axis=1, keep_dims=True)
-
-        # Compute m_i_new, l_i_new (line 11)
-        m_i_new = tl.maximum(m_i, ms_ij)
+        # Compute m_i_new, l_i_new
+        m_i_new = tl.maximum(m_i, m_ij)
         l_i_new = tl.exp(m_i - m_i_new) * l_i \
-                + tl.exp(ms_ij - m_i_new) * ls_ij
-        #m_i_new = tl.maximum(m_i, tl.reshape(mw_ij, (B_r, )))
-        # prev_coeff = tl.exp(m_i - m_i_new)
-        # curr_coeff = tl.exp(ms_ij - m_i_new)
-        # l_i_new = prev_coeff * l_i + curr_coeff * lw_ij
+                + tl.exp(m_ij - m_i_new) * l_ij
 
-        # Calculate new O_i (line 12)
+        # Calculate new O_i
         O_i = (l_i * tl.exp(m_i - m_i_new) * O_i
-               + tl.exp(ms_ij - m_i_new) * tl.dot(Ps_ij, V_j, input_precision=DOT_PRECISION)) \
+               + tl.exp(m_ij - m_i_new) * tl.dot(P_ij, V_j, input_precision=DOT_PRECISION)) \
                        / l_i_new
 
-        # Overwrite old l_i, m_i (line 13)
+        # Overwrite old l_i, m_i
         l_i = l_i_new
         m_i = m_i_new
 
@@ -238,13 +225,11 @@ def flash_attention_backward(
         K = torch.nn.functional.pad(K, pad, mode='constant', value=0.0)
         V = torch.nn.functional.pad(V, pad, mode='constant', value=0.0)
 
-    # TODO
-    # When writing a module, these can be changed into module properties
-    # L: 1 (Determine block sizes)
+    # Determine block sizes
     rows_bytesize = FP32_BYTESIZE * d_pow * 4 # Assuming FP32
     block_size = cdiv(M, rows_bytesize)
-    B_c = min(block_size, N) # TODO verify whether this min is okay, it's not in the algorithm.
-    B_r = min(block_size, d_pow) # Should make sense though.
+    B_c = min(block_size, N)
+    B_r = min(block_size, d_pow)
     T_r = cdiv(N, B_r)
     T_c = cdiv(N, B_c)
     dQ = torch.empty_like(Q)
