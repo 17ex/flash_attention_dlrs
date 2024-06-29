@@ -23,13 +23,25 @@ def is_cuda() -> bool:
 
 def get_fwd_autotune_config_cuda() -> list[triton.Config]:
     return [
-        triton.Config({'B_r': 128, 'B_c': 64}, num_stages=2, num_warps=32),
-        triton.Config({'B_r': 64, 'B_c': 64}, num_stages=2, num_warps=16),
-        triton.Config({'B_r': 64, 'B_c': 64}, num_stages=2, num_warps=8),
-        triton.Config({'B_r': 64, 'B_c': 32}, num_stages=2, num_warps=4),
-        triton.Config({'B_r': 64, 'B_c': 64}, num_stages=2, num_warps=2),
-        # triton.Config({'B_r': 32, 'B_c': 64}, num_stages=2, num_warps=4),
-        # triton.Config({'B_r': , 'B_c': 64}, num_stages=2, num_warps=4),
+            triton.Config({'B_r': 32, 'B_c': 64}, num_stages=2, num_warps=4),
+            triton.Config({'B_r': 32, 'B_c': 64}, num_stages=2, num_warps=8),
+            triton.Config({'B_r': 32, 'B_c': 64}, num_stages=3, num_warps=4),
+            triton.Config({'B_r': 32, 'B_c': 64}, num_stages=3, num_warps=8),
+            triton.Config({'B_r': 32, 'B_c': 64}, num_stages=4, num_warps=4),
+            triton.Config({'B_r': 32, 'B_c': 64}, num_stages=4, num_warps=8),
+            triton.Config({'B_r': 64, 'B_c': 32}, num_stages=2, num_warps=4),
+            triton.Config({'B_r': 64, 'B_c': 32}, num_stages=2, num_warps=8),
+            triton.Config({'B_r': 64, 'B_c': 32}, num_stages=3, num_warps=4),
+            triton.Config({'B_r': 64, 'B_c': 32}, num_stages=3, num_warps=8),
+            triton.Config({'B_r': 64, 'B_c': 32}, num_stages=4, num_warps=4),
+            triton.Config({'B_r': 64, 'B_c': 32}, num_stages=4, num_warps=8),
+            triton.Config({'B_r': 64, 'B_c': 64}, num_stages=1, num_warps=4),
+            triton.Config({'B_r': 64, 'B_c': 64}, num_stages=1, num_warps=8),
+            triton.Config({'B_r': 128, 'B_c': 32}, num_stages=1, num_warps=4),
+            triton.Config({'B_r': 128, 'B_c': 32}, num_stages=1, num_warps=8),
+            triton.Config({'B_r': 128, 'B_c': 32}, num_stages=2, num_warps=4),
+            triton.Config({'B_r': 128, 'B_c': 32}, num_stages=2, num_warps=8),
+            triton.Config({'B_r': 128, 'B_c': 32}, num_stages=3, num_warps=8),
     ]
 
 
