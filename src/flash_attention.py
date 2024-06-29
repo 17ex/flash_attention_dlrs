@@ -163,41 +163,24 @@ def forward_kernel(
     m_i= tl.full((B_r, 1), float('-inf'), tl.float32)
     l_i= tl.zeros_like(m_i)
 
-    for j in range(T_c):
+    for _ in range(T_c):
         K_j = tl.load(K_j_ptr)
         V_j = tl.load(V_j_ptr)
 
-        # Compute Q_i K_j^T (line 9)
+        # Compute Q_i K_j^T
         S_ij = tl.dot(Q_i, tl.trans(K_j), input_precision=DOT_PRECISION)
 
-        # Verify S_ij is of shape (B_r, B_c) at compile time.
-        # TODO this did not work with a tuple, hence the two checks.
-        # Check why S_ij.shape == (B_r, B_c) didn't work.
-        tl.static_assert(S_ij.shape[0] == B_r and S_ij.shape[1] == B_c)
+        # m_ij corresponds to m_i^(j), and m_i to m_i^(j-1) in the FA-2 paper.
+        # The same goes for l_ij and l_i.
+        rowmax_S_ij = tl.max(S_ij, axis=1, keep_dims=True)
+        m_ij = tl.maximum(m_i, rowmax_S_ij)
+        P_ij = tl.exp(S_ij - m_ij)
+        rowsum_P_ij = tl.sum(P_ij, axis=1, keep_dims=True)
+        l_ij = tl.exp(m_i - m_ij) * l_i + rowsum_P_ij
+        O_i = (1 / tl.exp(m_i - m_ij)) * O_i + tl.dot(P_ij, V_j, input_precision=DOT_PRECISION)
 
-        # Compute m~_ij, P~_ij, l~_ij (line 10)
-        ms_ij = tl.max(S_ij, axis=1, keep_dims=True)
-        Ps_ij = tl.exp(S_ij - ms_ij)
-        ls_ij = tl.sum(Ps_ij, axis=1, keep_dims=True)
-
-        # Compute m_i_new, l_i_new (line 11)
-        m_i_new = tl.maximum(m_i, ms_ij)
-        l_i_new = tl.exp(m_i - m_i_new) * l_i \
-                + tl.exp(ms_ij - m_i_new) * ls_ij
-        #m_i_new = tl.maximum(m_i, tl.reshape(mw_ij, (B_r, )))
-        # prev_coeff = tl.exp(m_i - m_i_new)
-        # curr_coeff = tl.exp(ms_ij - m_i_new)
-        # l_i_new = prev_coeff * l_i + curr_coeff * lw_ij
-
-        # Calculate new O_i (line 12)
-        O_i = (l_i * tl.exp(m_i - m_i_new) * O_i
-               + tl.exp(ms_ij - m_i_new) * tl.dot(Ps_ij, V_j, input_precision=DOT_PRECISION)) \
-                       / l_i_new
-
-        # Overwrite old l_i, m_i (line 13)
-        l_i = l_i_new
-        m_i = m_i_new
-
+        l_i = l_ij
+        m_i = m_ij
         K_j_ptr = tl.advance(K_j_ptr, (B_c, 0))
         V_j_ptr = tl.advance(V_j_ptr, (B_c, 0))
 
@@ -205,6 +188,7 @@ def forward_kernel(
     # store the results and exit
     # Writes to O are not masked (I don't think that's really possible here),
     # whatever function called this should ensure to only read the appropriate sub-tensor
+    O_i = (1 / l_i) * O_i
     L_i = m_i + tl.log(l_i)
     tl.store(O_i_ptr, O_i)
     tl.store(L_i_ptr, L_i)
