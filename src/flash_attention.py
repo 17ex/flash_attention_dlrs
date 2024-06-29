@@ -8,16 +8,12 @@ DTYPE = torch.float32
 DOT_PRECISION: tl.constexpr = "ieee"
 ORDER: tl.constexpr = (0, 1)
 
-# TODO
-# Use tl.autotune for forward_kernel (and backward),
-# and get rid of the M parameter here.
 def flash_attention_forward(
         Q,
         K,
         V,
-        M, # SRAM size
         dev
-        ):
+        ) -> tuple[torch.Tensor, torch.Tensor]:
 
     # Takes tensors of shape (B, H, N, d), where
     # B: Batch size

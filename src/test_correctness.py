@@ -41,7 +41,6 @@ for test in range(NUM_TESTS):
             Q,
             K,
             V,
-            M=SRAM,
             dev=gpu
             )
     if torch.allclose(O_torch, O_flash, atol=1e-4, rtol=1e-5):
