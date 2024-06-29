@@ -242,7 +242,7 @@ def flash_attention_backward(
     _lock_dQ_B_stride, _lock_dQ_H_stride, _ = _lock_dQ.stride()
     _written_dQ_B_stride, _written_dQ_H_stride, _ = _written_dQ.stride()
 
-    grid = lambda META: (B, H, triton.cdiv(N, META['B_r']))
+    grid = lambda META: (B, H, triton.cdiv(N, META['B_c']))
 
     backward_kernel[grid](
             Q, K, V, O,
