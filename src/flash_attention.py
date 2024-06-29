@@ -213,11 +213,12 @@ def flash_attention_backward(
     block_size = triton.cdiv(M, rows_bytesize)
     B_c = min(block_size, N)
     B_r = min(block_size, d_pow)
-    T_r = triton.cdiv(N, B_r)
-    T_c = triton.cdiv(N, B_c)
+
+    # Allocate output tensors
     dQ = torch.empty_like(Q)
     dK = torch.empty_like(K)
     dV = torch.empty_like(V)
+
     # int64 would make more sense here,
     # because atomic ops pointers only work on aligned memory,
     # but I need to compare with constexprs, and then the compiler
@@ -225,8 +226,9 @@ def flash_attention_backward(
     # and I don't know how to specify that a literal should be an
     # int64 and not int32. I don't even know if you can do this easily.
     # So, instead we double the length, and only index every 2nd element.
-    _lock_dQ = torch.zeros(B, H, 2 * T_r, dtype=torch.int32, device=dev)
-    _written_dQ = torch.zeros(B, H, 2 * T_r, dtype=torch.int32, device=dev)
+    comm_ptr_len = N // 8 # Because 16 is smallest possible val of B_r, and we need double length
+    _lock_dQ = torch.zeros(B, H, comm_ptr_len, dtype=torch.int32, device=dev)
+    _written_dQ = torch.zeros(B, H, comm_ptr_len, dtype=torch.int32, device=dev)
 
     QB_stride, QH_stride, QN_stride, Qd_stride = Q.stride()
     KB_stride, KH_stride, KN_stride, Kd_stride = K.stride()
@@ -240,7 +242,9 @@ def flash_attention_backward(
     _lock_dQ_B_stride, _lock_dQ_H_stride, _ = _lock_dQ.stride()
     _written_dQ_B_stride, _written_dQ_H_stride, _ = _written_dQ.stride()
 
-    backward_kernel[(B, H, T_c)](
+    grid = lambda META: (B, H, triton.cdiv(N, META['B_r']))
+
+    backward_kernel[grid](
             Q, K, V, O,
             dQ, dK, dV, dO,
             L,
@@ -256,9 +260,7 @@ def flash_attention_backward(
             LB_stride, LH_stride,
             _lock_dQ_B_stride, _lock_dQ_H_stride,
             _written_dQ_B_stride, _written_dQ_H_stride,
-            T_r,
-            N,
-            d,
+            B, H, N, d,
             B_c,
             B_r
             )
@@ -283,9 +285,7 @@ def backward_kernel(
         LB_stride, LH_stride,
         lock_dQ_B_stride, lock_dQ_H_stride,
         written_dQ_B_stride, written_dQ_H_stride,
-        T_r: tl.constexpr,
-        N: tl.constexpr,
-        d: tl.constexpr,
+        B, H, N, d: tl.constexpr, # B, H are here to re-tune the kernel when they change
         B_c: tl.constexpr,
         B_r: tl.constexpr
         ) -> None:
@@ -293,6 +293,8 @@ def backward_kernel(
     b = tl.program_id(axis=0)
     h = tl.program_id(axis=1)
     j = tl.program_id(axis=2)
+
+    T_r = tl.cdiv(N, B_r)
 
     # Create pointers and load the *_j blocks (line 6)
     K_j_ptr = tl.make_block_ptr(
