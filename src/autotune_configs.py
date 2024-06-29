@@ -21,7 +21,7 @@ def is_cuda() -> bool:
     return triton.runtime.driver.active.get_current_target().backend == "cuda"
 
 
-def get_fwd_autotune_config_cuda() -> list[triton.Config]:
+def get_autotune_config_cuda() -> list[triton.Config]:
     return [
             triton.Config({'B_r': 16, 'B_c': 16}, num_stages=2, num_warps=4),
             triton.Config({'B_r': 16, 'B_c': 16}, num_stages=2, num_warps=8),
@@ -82,12 +82,12 @@ def fwd_SRAM_needed(d, B_r, B_c) -> float:
     return 2 * (2 * B_r * d + 2 * B_c * d + 6 * B_r + 2*B_r * B_c)
 
 
-def is_candidate(config: triton.Config, N, d, SRAM_fun) -> bool:
+def is_fwd_candidate(config: triton.Config, N, d) -> bool:
     B_r = config.kwargs['B_r']
     B_c = config.kwargs['B_c']
     num_stages = config.num_stages
     num_warps = config.num_warps
-    SRAM_needed = SRAM_fun(d, B_r, B_c)
+    SRAM_needed = fwd_SRAM_needed(d, B_r, B_c)
     SRAM_needed *= fwd_num_stages_mem_factor(num_stages)
     SRAM_needed *= SAFETY_MARGIN_MEM_FACTOR
     return N >= min(B_r, B_c) and SRAM_needed <= SRAM and N % max(B_r, B_c) == 0
@@ -96,12 +96,33 @@ def is_candidate(config: triton.Config, N, d, SRAM_fun) -> bool:
 def fwd_conf_prune(configs, *args, **kwargs) -> list[triton.Config]:
     kernel_args = args[0]
     B, H, N, d = kernel_args['B'], kernel_args['H'], kernel_args['N'], kernel_args['d']
-    return list(filter(lambda config: is_candidate(config, N, d, fwd_SRAM_needed),
+    return list(filter(lambda config: is_fwd_candidate(config, N, d),
                        configs))
 
 
-def get_fwd_autotune_config() -> list[triton.Config]:
+def get_autotune_config() -> list[triton.Config]:
     if is_cuda():
-        return get_fwd_autotune_config_cuda()
+        return get_autotune_config_cuda()
     else:
         raise NotImplementedError("This flash attention implementation currently only supports CUDA devices!")
+
+
+def bwd_SRAM_needed(N, d, B_r, B_c) -> float:
+    # This is only in theory. In practice, much more SRAM is used,
+    # probably because the code is very non-optimal (eg. still FA-1 math atm),
+    # and SRAM is also needed for lots of things other than the block matrices/vectors
+    return 2 * (N//4 + 4 * B_r * d + 4 * B_c * d + 2 * B_r + 3 * B_c * B_r)
+
+
+def is_bwd_candidate(config: triton.Config, N, d) -> bool:
+    B_r = config.kwargs['B_r']
+    B_c = config.kwargs['B_c']
+    # All configs where B_r or B_c is >= 64 already require too much SRAM
+    return N >= min(B_r, B_c) and N % max(B_r, B_c) == 0 and bwd_SRAM_needed(N, d, B_r, B_c) <= SRAM
+
+
+def bwd_conf_prune(configs, *args, **kwargs) -> list[triton.Config]:
+    kernel_args = args[0]
+    B, H, N, d = kernel_args['B'], kernel_args['H'], kernel_args['N'], kernel_args['d']
+    return list(filter(lambda config: is_bwd_candidate(config, N, d),
+                       configs))

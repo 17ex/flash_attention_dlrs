@@ -67,7 +67,7 @@ def flash_attention_forward(
 
 
 @triton.autotune(
-        configs=autotune_configs.get_fwd_autotune_config(),
+        configs=autotune_configs.get_autotune_config(),
         key=['B', 'H', 'N', 'd'],
         prune_configs_by={"early_config_prune": autotune_configs.fwd_conf_prune}
 )
@@ -260,14 +260,17 @@ def flash_attention_backward(
             LB_stride, LH_stride,
             _lock_dQ_B_stride, _lock_dQ_H_stride,
             _written_dQ_B_stride, _written_dQ_H_stride,
-            B, H, N, d,
-            B_c,
-            B_r
+            B, H, N, d
             )
 
     return dQ, dK, dV
 
 
+@triton.autotune(
+        configs=autotune_configs.get_autotune_config(),
+        key=['B', 'H', 'N', 'd'],
+        prune_configs_by={"early_config_prune": autotune_configs.bwd_conf_prune}
+)
 @triton.jit
 def backward_kernel(
         Q_ptr, K_ptr, V_ptr, O_ptr,
