@@ -1,6 +1,7 @@
 import torch
 import triton
 import triton.language as tl
+from autotune_configs import get_fwd_autotune_config
 
 FP32_BYTESIZE = 4 # TODO future: accomodate other types than float32.
 DTYPE = torch.float32
@@ -40,12 +41,6 @@ def flash_attention_forward(
         K = torch.nn.functional.pad(K, pad, mode='constant', value=0.0)
         V = torch.nn.functional.pad(V, pad, mode='constant', value=0.0)
 
-    # Determine block sizes
-    rows_bytesize = FP32_BYTESIZE * d_pow * 4 # Assuming FP32
-    block_size = triton.cdiv(M, rows_bytesize)
-    B_c = min(block_size, N) # TODO this is now tunable
-    B_r = min(block_size, d_pow) # TODO this is now tunable
-
     # Initialize output and statistics
     O = torch.empty(B, H, N, d_pow, dtype=DTYPE, device=dev)
     L = torch.empty(B, H, N, 1, dtype=DTYPE, device=dev)
@@ -69,14 +64,16 @@ def flash_attention_forward(
             VB_stride, VH_stride, VN_stride, Vd_stride,
             OB_stride, OH_stride, ON_stride, Od_stride,
             LB_stride, LH_stride,
-            B, H, N, d_pow,
-            B_c,
-            B_r
+            B, H, N, d_pow
             )
 
     return O[:, :, :, 0:d], L
 
 
+@triton.autotune(
+        configs=get_fwd_autotune_config(),
+        key=['B', 'H', 'N', 'd'],
+)
 @triton.jit
 def forward_kernel(
         Q_ptr,
@@ -89,7 +86,7 @@ def forward_kernel(
         VB_stride, VH_stride, VN_stride, Vd_stride,
         OB_stride, OH_stride, ON_stride, Od_stride,
         LB_stride, LH_stride,
-        B, H, N, d: tl.constexpr,
+        B, H, N, d: tl.constexpr, # B, H are here to re-tune the kernel when they change
         B_c: tl.constexpr,
         B_r: tl.constexpr
         ):
