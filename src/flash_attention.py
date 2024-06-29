@@ -1,7 +1,7 @@
 import torch
 import triton
 import triton.language as tl
-from autotune_configs import get_fwd_autotune_config
+import autotune_configs
 
 FP32_BYTESIZE = 4 # TODO future: accomodate other types than float32.
 DTYPE = torch.float32
@@ -67,8 +67,9 @@ def flash_attention_forward(
 
 
 @triton.autotune(
-        configs=get_fwd_autotune_config(),
+        configs=autotune_configs.get_fwd_autotune_config(),
         key=['B', 'H', 'N', 'd'],
+        prune_configs_by={"early_config_prune": autotune_configs.fwd_conf_prune}
 )
 @triton.jit
 def forward_kernel(
