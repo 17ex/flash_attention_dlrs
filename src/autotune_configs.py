@@ -23,6 +23,7 @@ def is_cuda() -> bool:
 
 def get_fwd_autotune_config_cuda() -> list[triton.Config]:
     return [
+            triton.Config({'B_r': 16, 'B_c': 16}, num_stages=2, num_warps=4), # Failsafe for N < 32
             triton.Config({'B_r': 32, 'B_c': 64}, num_stages=2, num_warps=4),
             triton.Config({'B_r': 32, 'B_c': 64}, num_stages=2, num_warps=8),
             triton.Config({'B_r': 32, 'B_c': 64}, num_stages=3, num_warps=4),
@@ -86,9 +87,7 @@ def is_candidate(config: triton.Config, N, d, SRAM_fun) -> bool:
     SRAM_needed = SRAM_fun(d, B_r, B_c)
     SRAM_needed *= fwd_num_stages_mem_factor(num_stages)
     SRAM_needed *= SAFETY_MARGIN_MEM_FACTOR
-    print(SRAM_needed)
-    print(SRAM_needed <= SRAM)
-    return N >= min(B_r, B_c) and SRAM_needed <= SRAM
+    return N >= min(B_r, B_c) and SRAM_needed <= SRAM and N % max(B_r, B_c) == 0
 
 
 def fwd_conf_prune(configs, *args, **kwargs) -> list[triton.Config]:
