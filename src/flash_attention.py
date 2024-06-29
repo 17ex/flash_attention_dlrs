@@ -49,8 +49,7 @@ def flash_attention_forward(
     rows_bytesize = FP32_BYTESIZE * d_pow * 4 # Assuming FP32
     block_size = cdiv(M, rows_bytesize)
     B_c = min(block_size, N) # TODO this is now tunable
-    B_r = min(block_size, d_pow)
-    T_r = cdiv(N, B_r)
+    B_r = min(block_size, d_pow) # TODO this is now tunable
 
     # Initialize output and statistics
     O = torch.empty(B, H, N, d_pow, dtype=DTYPE, device=dev)
@@ -62,7 +61,9 @@ def flash_attention_forward(
     OB_stride, OH_stride, ON_stride, Od_stride = O.stride()
     LB_stride, LH_stride, _, _ = L.stride()
 
-    forward_kernel[(B, H, T_r)](
+    grid = lambda META: (B, H, triton.cdiv(N, META['B_r']))
+
+    forward_kernel[grid](
             Q,
             K,
             V,
