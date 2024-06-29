@@ -218,6 +218,7 @@ def flash_attention_backward(
     dQ = torch.empty_like(Q)
     dK = torch.empty_like(K)
     dV = torch.empty_like(V)
+    D = torch.empty_like(L)
 
     # int64 would make more sense here,
     # because atomic ops pointers only work on aligned memory,
@@ -239,31 +240,89 @@ def flash_attention_backward(
     dVB_stride, dVH_stride, dVN_stride, dVd_stride = dV.stride()
     dOB_stride, dOH_stride, dON_stride, dOd_stride = dO.stride()
     LB_stride, LH_stride, _, _ = L.stride()
+    DB_stride, DH_stride, _, _ = D.stride()
     _lock_dQ_B_stride, _lock_dQ_H_stride, _ = _lock_dQ.stride()
     _written_dQ_B_stride, _written_dQ_H_stride, _ = _written_dQ.stride()
 
-    grid = lambda META: (B, H, triton.cdiv(N, META['B_c']))
+    # Precompute D
+    bwd_D_grid = lambda META: (B, H, triton.cdiv(N, META['B_r']))
+    bwd_D_kernel[bwd_D_grid](
+            O, dO, D,
+            OB_stride, OH_stride, ON_stride, Od_stride,
+            dOB_stride, dOH_stride, dON_stride, dOd_stride,
+            DB_stride, DH_stride,
+            B, H, N, d,
+            B_r = 16 # TODO tune me
+            )
 
-    backward_kernel[grid](
-            Q, K, V, O,
+    backward_kernel_grid = lambda META: (B, H, triton.cdiv(N, META['B_c']))
+    backward_kernel[backward_kernel_grid](
+            Q, K, V,
             dQ, dK, dV, dO,
-            L,
+            L, D,
             _lock_dQ, _written_dQ,
             QB_stride, QH_stride, QN_stride, Qd_stride,
             KB_stride, KH_stride, KN_stride, Kd_stride,
             VB_stride, VH_stride, VN_stride, Vd_stride,
-            OB_stride, OH_stride, ON_stride, Od_stride,
             dQB_stride, dQH_stride, dQN_stride, dQd_stride,
             dKB_stride, dKH_stride, dKN_stride, dKd_stride,
             dVB_stride, dVH_stride, dVN_stride, dVd_stride,
             dOB_stride, dOH_stride, dON_stride, dOd_stride,
-            LB_stride, LH_stride,
+            LB_stride, LH_stride, DB_stride, DH_stride,
             _lock_dQ_B_stride, _lock_dQ_H_stride,
             _written_dQ_B_stride, _written_dQ_H_stride,
             B, H, N, d
             )
 
     return dQ, dK, dV
+
+
+@triton.jit
+def bwd_D_kernel(
+    O_ptr, dO_ptr, D_ptr,
+    OB_stride, OH_stride, ON_stride, Od_stride,
+    dOB_stride, dOH_stride, dON_stride, dOd_stride,
+    DB_stride, DH_stride,
+    B, H, N, d: tl.constexpr, # B, H are here to re-tune the kernel when they change
+    B_r: tl.constexpr
+        ) -> None:
+    # This kernel simply computes rowsum(dO * O), which is it's own seperate kernel,
+    # computed before the rest, in FA-2.
+
+    # TODO why does it say rowsum but R^d in the FA-2 paper??
+    # Is that an error or am I misunderstanding something?
+    # -> R^n makes more sense to me, so I'll use that.
+
+    b = tl.program_id(axis=0)
+    h = tl.program_id(axis=1)
+    i = tl.program_id(axis=2)
+
+    O_i_ptr = tl.make_block_ptr(
+            O_ptr + b * OB_stride + h * OH_stride,
+            (N, d),
+            (ON_stride, Od_stride),
+            (i * B_r, 0),
+            (B_r, d),
+            ORDER)
+    dO_i_ptr = tl.make_block_ptr(
+            dO_ptr + b * dOB_stride + h * dOH_stride,
+            (N, d),
+            (dON_stride, dOd_stride),
+            (i * B_r, 0),
+            (B_r, d),
+            ORDER)
+    D_i_ptr = tl.make_block_ptr(
+            D_ptr + b * DB_stride + h * DH_stride,
+            (N, 1),
+            (1, 1),
+            (i * B_r, 0),
+            (B_r, 1),
+            ORDER)
+
+    O_i = tl.load(O_i_ptr)
+    dO_i = tl.load(dO_i_ptr)
+    D_i = tl.sum(O_i * dO_i, axis=1, keep_dims=True)
+    tl.store(D_i_ptr, D_i)
 
 
 @triton.autotune(
@@ -273,19 +332,18 @@ def flash_attention_backward(
 )
 @triton.jit
 def backward_kernel(
-        Q_ptr, K_ptr, V_ptr, O_ptr,
+        Q_ptr, K_ptr, V_ptr,
         dQ_ptr, dK_ptr, dV_ptr, dO_ptr,
-        L_ptr,
+        L_ptr, D_ptr,
         lock_dQ, written_dQ,
         QB_stride, QH_stride, QN_stride, Qd_stride,
         KB_stride, KH_stride, KN_stride, Kd_stride,
         VB_stride, VH_stride, VN_stride, Vd_stride,
-        OB_stride, OH_stride, ON_stride, Od_stride,
         dQB_stride, dQH_stride, dQN_stride, dQd_stride,
         dKB_stride, dKH_stride, dKN_stride, dKd_stride,
         dVB_stride, dVH_stride, dVN_stride, dVd_stride,
         dOB_stride, dOH_stride, dON_stride, dOd_stride,
-        LB_stride, LH_stride,
+        LB_stride, LH_stride, DB_stride, DH_stride,
         lock_dQ_B_stride, lock_dQ_H_stride,
         written_dQ_B_stride, written_dQ_H_stride,
         B, H, N, d: tl.constexpr, # B, H are here to re-tune the kernel when they change
@@ -335,13 +393,6 @@ def backward_kernel(
             (0, 0),
             (B_r, d),
             ORDER)
-    O_i_ptr = tl.make_block_ptr(
-            O_ptr + b * OB_stride + h * OH_stride,
-            (N, d),
-            (ON_stride, Od_stride),
-            (0, 0),
-            (B_r, d),
-            ORDER)
     dO_i_ptr = tl.make_block_ptr(
             dO_ptr + b * dOB_stride + h * dOH_stride,
             (N, d),
@@ -363,6 +414,13 @@ def backward_kernel(
             (0, 0),
             (B_r, 1),
             ORDER)
+    D_i_ptr = tl.make_block_ptr(
+            D_ptr + b * DB_stride + h * DH_stride,
+            (N, 1),
+            (1, 1),
+            (0, 0),
+            (B_r, 1),
+            ORDER)
 
     K_j = tl.load(K_j_ptr)
     V_j = tl.load(V_j_ptr)
@@ -375,10 +433,10 @@ def backward_kernel(
     for _ in range(T_r):
 
         # Load *_i blocks
-        Q_i = tl.load(Q_i_ptr)
-        O_i = tl.load(O_i_ptr)
-        dO_i = tl.load(dO_i_ptr)
+        Q_i = tl.load(Q_i_ptr)   # O_i doesn't need to be loaded,
+        dO_i = tl.load(dO_i_ptr) # even though the paper says to load it
         L_i = tl.load(L_i_ptr)
+        D_i = tl.load(D_i_ptr)
 
         S_ij = tl.dot(Q_i, tl.trans(K_j), input_precision=DOT_PRECISION)
 
@@ -387,8 +445,6 @@ def backward_kernel(
         dV_j = dV_j + tl.dot(tl.trans(P_ij), dO_i, input_precision=DOT_PRECISION)
 
         dP_ij = tl.dot(dO_i, tl.trans(V_j), input_precision=DOT_PRECISION)
-
-        D_i = tl.sum(dO_i * O_i, axis=1, keep_dims=True)
 
         dS_ij = P_ij * (dP_ij - D_i)
 
@@ -418,10 +474,10 @@ def backward_kernel(
 
         # Advance the *_i_ptrs
         Q_i_ptr = tl.advance(Q_i_ptr, (B_r, 0))
-        O_i_ptr = tl.advance(O_i_ptr, (B_r, 0))
         dO_i_ptr = tl.advance(dO_i_ptr, (B_r, 0))
         dQ_i_ptr = tl.advance(dQ_i_ptr, (B_r, 0))
         L_i_ptr = tl.advance(L_i_ptr, (B_r, 0))
+        D_i_ptr = tl.advance(D_i_ptr, (B_r, 0))
         lock_dQ_i += 1
         written_dQ_i += 1
 
