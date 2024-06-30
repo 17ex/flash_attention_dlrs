@@ -251,8 +251,7 @@ def flash_attention_backward(
             OB_stride, OH_stride, ON_stride, Od_stride,
             dOB_stride, dOH_stride, dON_stride, dOd_stride,
             DB_stride, DH_stride,
-            B, H, N, d,
-            B_r = 16 # TODO tune me
+            B, H, N, d
             )
 
     bwd_kernel_grid = lambda META: (B, H, triton.cdiv(N, META['B_c']))
@@ -277,6 +276,11 @@ def flash_attention_backward(
     return dQ, dK, dV
 
 
+@triton.autotune(
+        configs=autotune_configs.get_autotune_config(),
+        key=['B', 'H', 'N', 'd'],
+        prune_configs_by={"early_config_prune": autotune_configs.bwd_D_conf_prune}
+)
 @triton.jit
 def bwd_D_kernel(
     O_ptr, dO_ptr, D_ptr,
@@ -284,7 +288,8 @@ def bwd_D_kernel(
     dOB_stride, dOH_stride, dON_stride, dOd_stride,
     DB_stride, DH_stride,
     B, H, N, d: tl.constexpr, # B, H are here to re-tune the kernel when they change
-    B_r: tl.constexpr
+    B_r: tl.constexpr,
+    B_c: tl.constexpr # Unused, present because configs specify it.
         ) -> None:
     # This kernel simply computes rowsum(dO * O), which is it's own seperate kernel,
     # computed before the rest, in FA-2.

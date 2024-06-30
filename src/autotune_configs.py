@@ -109,6 +109,30 @@ def get_autotune_config_cuda() -> list[triton.Config]:
             triton.Config({'B_r': 256, 'B_c': 256}, num_stages=2, num_warps=4),
             triton.Config({'B_r': 256, 'B_c': 256}, num_stages=2, num_warps=8),
             triton.Config({'B_r': 256, 'B_c': 256}, num_stages=3, num_warps=8),
+            triton.Config({'B_r': 16, 'B_c': 0}, num_stages=2, num_warps=4),    # From here and below (where B_c = 1),
+            triton.Config({'B_r': 16, 'B_c': 0}, num_stages=2, num_warps=8),    # the configs are only for the bwd_D_kernel.
+            triton.Config({'B_r': 16, 'B_c': 0}, num_stages=3, num_warps=4),
+            triton.Config({'B_r': 16, 'B_c': 0}, num_stages=3, num_warps=8),
+            triton.Config({'B_r': 32, 'B_c': 0}, num_stages=2, num_warps=4),
+            triton.Config({'B_r': 32, 'B_c': 0}, num_stages=2, num_warps=8),
+            triton.Config({'B_r': 32, 'B_c': 0}, num_stages=3, num_warps=4),
+            triton.Config({'B_r': 32, 'B_c': 0}, num_stages=3, num_warps=8),
+            triton.Config({'B_r': 64, 'B_c': 0}, num_stages=2, num_warps=4),
+            triton.Config({'B_r': 64, 'B_c': 0}, num_stages=2, num_warps=8),
+            triton.Config({'B_r': 64, 'B_c': 0}, num_stages=3, num_warps=4),
+            triton.Config({'B_r': 64, 'B_c': 0}, num_stages=3, num_warps=8),
+            triton.Config({'B_r': 128, 'B_c': 0}, num_stages=2, num_warps=4),
+            triton.Config({'B_r': 128, 'B_c': 0}, num_stages=2, num_warps=8),
+            triton.Config({'B_r': 128, 'B_c': 0}, num_stages=3, num_warps=4),
+            triton.Config({'B_r': 128, 'B_c': 0}, num_stages=3, num_warps=8),
+            triton.Config({'B_r': 256, 'B_c': 0}, num_stages=2, num_warps=4),
+            triton.Config({'B_r': 256, 'B_c': 0}, num_stages=2, num_warps=8),
+            triton.Config({'B_r': 256, 'B_c': 0}, num_stages=3, num_warps=4),
+            triton.Config({'B_r': 256, 'B_c': 0}, num_stages=3, num_warps=8),
+            triton.Config({'B_r': 512, 'B_c': 0}, num_stages=2, num_warps=4),
+            triton.Config({'B_r': 512, 'B_c': 0}, num_stages=2, num_warps=8),
+            triton.Config({'B_r': 512, 'B_c': 0}, num_stages=3, num_warps=4),
+            triton.Config({'B_r': 512, 'B_c': 0}, num_stages=3, num_warps=8),
     ]
 
 
@@ -153,7 +177,10 @@ def is_fwd_candidate(config: triton.Config, N, d) -> bool:
     SRAM_needed = fwd_SRAM_needed(d, B_r, B_c)
     SRAM_needed *= fwd_num_stages_mem_factor(num_stages)
     SRAM_needed *= SAFETY_MARGIN_MEM_FACTOR
-    return N >= min(B_r, B_c) and SRAM_needed <= SRAM and N % max(B_r, B_c) == 0
+    return (B_c != 0 and
+            N >= min(B_r, B_c) and
+            SRAM_needed <= SRAM and
+            N % max(B_r, B_c) == 0)
 
 
 def fwd_conf_prune(configs, *args, **kwargs) -> list[triton.Config]:
@@ -181,11 +208,34 @@ def is_bwd_candidate(config: triton.Config, N, d) -> bool:
     B_r = config.kwargs['B_r']
     B_c = config.kwargs['B_c']
     # All configs where B_r or B_c is >= 64 already require too much SRAM
-    return N >= min(B_r, B_c) and N % max(B_r, B_c) == 0 and bwd_SRAM_needed(N, d, B_r, B_c) <= SRAM
+    return (B_c != 0 and
+            N >= min(B_r, B_c) and
+            N % max(B_r, B_c) == 0 and
+            bwd_SRAM_needed(N, d, B_r, B_c) <= SRAM)
 
 
 def bwd_conf_prune(configs, *args, **kwargs) -> list[triton.Config]:
     kernel_args = args[0]
     B, H, N, d = kernel_args['B'], kernel_args['H'], kernel_args['N'], kernel_args['d']
     return list(filter(lambda config: is_bwd_candidate(config, N, d),
+                       configs))
+
+
+def bwd_D_SRAM_needed(d, B_r) -> float:
+    return 3 * B_r * d
+
+
+def is_bwd_D_candidate(config: triton.Config, N, d) -> bool:
+    B_r = config.kwargs['B_r']
+    B_c = config.kwargs['B_c']
+    return (B_c == 0 and
+            N >= B_r and
+            N % B_r == 0 and
+            bwd_D_SRAM_needed(d, B_r) <= SRAM)
+
+
+def bwd_D_conf_prune(configs, *args, **kwargs) -> list[triton.Config]:
+    kernel_args = args[0]
+    B, H, N, d = kernel_args['B'], kernel_args['H'], kernel_args['N'], kernel_args['d']
+    return list(filter(lambda config: is_bwd_D_candidate(config, N, d),
                        configs))
