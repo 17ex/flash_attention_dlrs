@@ -22,7 +22,7 @@ def fwd_kernel(
         VB_stride, VH_stride, VN_stride, Vd_stride,
         OB_stride, OH_stride, ON_stride, Od_stride,
         LB_stride, LH_stride,
-        B, H, N, d: tl.constexpr, # B, H are here to re-tune the kernel when they change
+        B, H, N: tl.constexpr, d: tl.constexpr, # B, H are here to re-tune the kernel when they change
         B_c: tl.constexpr,
         B_r: tl.constexpr
         ):
@@ -133,7 +133,7 @@ def bwd_D_kernel(
     OB_stride, OH_stride, ON_stride, Od_stride,
     dOB_stride, dOH_stride, dON_stride, dOd_stride,
     DB_stride, DH_stride,
-    B, H, N, d: tl.constexpr, # B, H are here to re-tune the kernel when they change
+    B, H, N: tl.constexpr, d: tl.constexpr, # B, H are here to re-tune the kernel when they change
     B_r: tl.constexpr,
     B_c: tl.constexpr # Unused, present because configs specify it.
         ) -> None:
@@ -198,7 +198,7 @@ def bwd_kernel(
         lock_dQ_B_stride, lock_dQ_H_stride,
         written_dQ_B_stride, written_dQ_H_stride,
         B, H, N, d: tl.constexpr, # B, H are here to re-tune the kernel when they change
-        B_c: tl.constexpr,
+        B_c: tl.constexpr, # TODO when N is constexpr, it for whatever reason hangs upon execution
         B_r: tl.constexpr
         ) -> None:
 
