@@ -459,6 +459,16 @@ def bwd_kernel(
         # same time, leading to race conditions.
         # The below code guardes against this using a locking strategy to ensure
         # only one thread can update dQ_i at a time.
+        # TODO
+        # Important: This is non-deterministic. Add a seperate, deterministic bwd pass kernel,
+        # eg. by not really using a lock, but something where every thread writes their j into the
+        # communication data structure, so the order is always the same
+        # TODO
+        # Very Important: For some reason, the first time the bwd kernel is run,
+        # the non-deterministic dQ that is returned is completely wrong.
+        # After that, no matter how often it's run, the non-deterministic
+        # dQ is always within very small tolerances.
+        # Why is that the case? This needs to be fixed
         while tl.atomic_cas(lock_dQ_i, 0, 1) == 1:
             pass
         # ============== dQ_i (and written_dQ_i) Mem access is protected by a lock in this snippet.
