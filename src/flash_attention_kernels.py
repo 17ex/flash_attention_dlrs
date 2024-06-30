@@ -32,8 +32,8 @@ def fwd_kernel(
 
     # Determine which on batch/head number and i of the outer loop
     # this kernel should operate on
-    b = tl.program_id(axis=2)
-    h = tl.program_id(axis=1)
+    b = tl.program_id(axis=1)
+    h = tl.program_id(axis=2)
     i = tl.program_id(axis=0)
 
     T_c = tl.cdiv(N, B_c)
@@ -146,8 +146,8 @@ def bwd_D_kernel(
     # Is that an error or am I misunderstanding something?
     # -> R^n makes more sense to me, so I'll use that.
 
-    b = tl.program_id(axis=2)
-    h = tl.program_id(axis=1)
+    b = tl.program_id(axis=1)
+    h = tl.program_id(axis=2)
     i = tl.program_id(axis=0)
 
     O_i_ptr = tl.make_block_ptr(
@@ -205,8 +205,8 @@ def bwd_kernel(
         B_r: tl.constexpr
         ) -> None:
 
-    b = tl.program_id(axis=2)
-    h = tl.program_id(axis=1)
+    b = tl.program_id(axis=1)
+    h = tl.program_id(axis=2)
     j = tl.program_id(axis=0)
 
     T_r = tl.cdiv(N, B_r)
@@ -375,8 +375,8 @@ def bwd_deterministic_kernel(
     # TODO
     # This is still not deterministic. Find out why and fix it
 
-    b = tl.program_id(axis=2)
-    h = tl.program_id(axis=1)
+    b = tl.program_id(axis=1)
+    h = tl.program_id(axis=2)
     j = tl.program_id(axis=0)
 
     T_r = tl.cdiv(N, B_r)
