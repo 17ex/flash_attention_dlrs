@@ -56,7 +56,7 @@ class FlashAttention(torch.autograd.Function):
         OB_stride, OH_stride, ON_stride, Od_stride = O.stride()
         LB_stride, LH_stride, _, _ = L.stride()
 
-        fwd_kernel_grid = lambda META: (B, H, triton.cdiv(N, META['B_r']))
+        fwd_kernel_grid = lambda META: (triton.cdiv(N, META['B_r']), H, B)
 
         flash_attention_kernels.fwd_kernel[fwd_kernel_grid](
                 Q,
@@ -122,7 +122,7 @@ class FlashAttention(torch.autograd.Function):
         written_dQ_B_stride, written_dQ_H_stride, _ = written_dQ.stride()
 
         # Precompute D
-        bwd_D_grid = lambda META: (B, H, triton.cdiv(N, META['B_r']))
+        bwd_D_grid = lambda META: (triton.cdiv(N, META['B_r']), H, B)
         flash_attention_kernels.bwd_D_kernel[bwd_D_grid](
                 O, dO, D,
                 OB_stride, OH_stride, ON_stride, Od_stride,
@@ -133,7 +133,7 @@ class FlashAttention(torch.autograd.Function):
                 )
 
         # Launch indeterministic bwd kernel
-        bwd_kernel_grid = lambda META: (B, H, triton.cdiv(N, META['B_c']))
+        bwd_kernel_grid = lambda META: (triton.cdiv(N, META['B_c']), H, B)
         flash_attention_kernels.bwd_kernel[bwd_kernel_grid](
                 Q, K, V,
                 dQ, dK, dV, dO,
@@ -196,7 +196,7 @@ class FlashAttentionDeterministic(torch.autograd.Function):
         OB_stride, OH_stride, ON_stride, Od_stride = O.stride()
         LB_stride, LH_stride, _, _ = L.stride()
 
-        fwd_kernel_grid = lambda META: (B, H, triton.cdiv(N, META['B_r']))
+        fwd_kernel_grid = lambda META: (triton.cdiv(N, META['B_r']), H, B)
 
         flash_attention_kernels.fwd_kernel[fwd_kernel_grid](
                 Q,
@@ -259,7 +259,7 @@ class FlashAttentionDeterministic(torch.autograd.Function):
         written_dQ_B_stride, written_dQ_H_stride = written_dQ.stride()
 
         # Precompute D
-        bwd_D_grid = lambda META: (B, H, triton.cdiv(N, META['B_r']))
+        bwd_D_grid = lambda META: (triton.cdiv(N, META['B_r']), H, B)
         flash_attention_kernels.bwd_D_kernel[bwd_D_grid](
                 O, dO, D,
                 OB_stride, OH_stride, ON_stride, Od_stride,
@@ -270,7 +270,7 @@ class FlashAttentionDeterministic(torch.autograd.Function):
                 )
 
         # Launch deterministic bwd kernel
-        bwd_kernel_grid = lambda META: (B, H, triton.cdiv(N, META['B_c']))
+        bwd_kernel_grid = lambda META: (triton.cdiv(N, META['B_c']), H, B)
         flash_attention_kernels.bwd_deterministic_kernel[bwd_kernel_grid](
                 Q, K, V,
                 dQ, dK, dV, dO,
