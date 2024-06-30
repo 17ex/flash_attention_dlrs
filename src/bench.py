@@ -2,12 +2,13 @@ import torch
 import triton
 from flash_attention_torch import FlashAttention
 from flash_attn import flash_attn_func
+from flash_attention_openai_tutorial import _attention as openai_attention
 
 B = 8
 H = 8
-d = 128
+d = 32
 
-DTYPE = torch.float32
+DTYPE = torch.float16
 MODES = ["fwd", "bwd"]
 torch.manual_seed(42)
 
@@ -20,11 +21,14 @@ for mode in MODES:
     bench_configs.append(
         triton.testing.Benchmark(
             x_names=["N"],
-            x_vals=[2**i for i in range(5, 12)],
+            x_vals=[2**i for i in range(7, 15)], # OpenAI Triton requires at least 2^7
             line_arg="provider",
-            line_vals=[f"my-triton-{dtype_str}", f"daolab-{dtype_str}", f"torch-{dtype_str}"],
-            line_names=[f"My Triton [{dtype_str.upper()}]", f"DaoLab FA-2 [{dtype_str.upper()}]", f"Torch Attention [{dtype_str.upper()}]"],
-            styles=[("red", "-"), ("blue", "-"), ("black", "-")],
+            line_vals=[f"my-triton-{dtype_str}", f"daolab-{dtype_str}", f"openai-{dtype_str}",
+                       f"torch-fa-{dtype_str}", f"torch-xformers-{dtype_str}", f"torch-math-{dtype_str}"],
+            line_names=[f"My Triton ~FA-2 [{dtype_str.upper()}]", f"DaoLab FA-2 [{dtype_str.upper()}]", f"OpenAI Triton FA-2 [{dtype_str.upper()}]",
+                        f"Torch FA-2 [{dtype_str.upper()}]", f"Torch xFormers [{dtype_str.upper()}]", f"Torch Math [{dtype_str.upper()}]"],
+            styles=[("red", "-"), ("blue", "-"), ("green", "-"),
+                    ("black", "-"), ("black", "--"), ("black", "-.")],
             xlabel="N: Context size/Sequence length",
             ylabel="Mean Runtime [ms]",
             # x_log=False,
@@ -46,39 +50,43 @@ def bench_flash_attention(B, H, N, d, mode, dtype, provider):
     assert mode in MODES
     warmup = 25
     rep = 100
-    Q = torch.randn(B, H, N, d, dtype=DTYPE, device=gpu, requires_grad=True)
-    K = torch.randn(B, H, N, d, dtype=DTYPE, device=gpu, requires_grad=True)
-    V = torch.randn(B, H, N, d, dtype=DTYPE, device=gpu, requires_grad=True)
-    if "triton" in provider:
-        def fwd_fn() -> torch.Tensor: return FlashAttention.apply(Q, K, V)
-    elif "daolab" in provider:
-        Q = Q.to(dtype=torch.float16)
-        K = K.to(dtype=torch.float16)
-        V = V.to(dtype=torch.float16)
-        def fwd_fn() -> torch.Tensor: return flash_attn_func(Q, K, V)
-        # TODO
-        # HOTFIX
-    elif "torch" in provider:
-        def fwd_fn() -> torch.Tensor: return torch.nn.functional.scaled_dot_product_attention(Q, K, V, scale=1)
-    else:
-        raise ValueError()
+    try:
+        Q = torch.randn(B, H, N, d, dtype=DTYPE, device=gpu, requires_grad=True)
+        K = torch.randn(B, H, N, d, dtype=DTYPE, device=gpu, requires_grad=True)
+        V = torch.randn(B, H, N, d, dtype=DTYPE, device=gpu, requires_grad=True)
+        if "triton" in provider:
+            def fwd_fn() -> torch.Tensor: return FlashAttention.apply(Q, K, V)
+        elif "daolab" in provider:
+            def fwd_fn() -> torch.Tensor: return flash_attn_func(Q, K, V)
+        elif "torch" in provider:
+            if "torch-fa" in provider:
+                sdpbackend = torch.nn.attention.SDPBackend.FLASH_ATTENTION
+            elif "torch-xformers" in provider:
+                sdpbackend = torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION
+            elif "torch-math" in provider:
+                sdpbackend = torch.nn.attention.SDPBackend.MATH
+            else:
+                raise ValueError()
+            def fwd_fn() -> torch.Tensor:
+                with torch.nn.attention.sdpa_kernel(sdpbackend):
+                    return torch.nn.functional.scaled_dot_product_attention(Q, K, V, scale=1)
+        elif "openai" in provider:
+            def fwd_fn() -> torch.Tensor: return openai_attention.apply(Q, K, V, False, 1.3)
+        else:
+            raise ValueError()
 
-    if mode == "bwd":
-        O: torch.Tensor = fwd_fn()
-        dO = torch.randn_like(O)
-        def bench_fn() -> torch.Tensor: return O.backward(dO, retain_graph=True)
-    else:
-        bench_fn = fwd_fn
-    # TODO test
-    bench_fn()
-    ms = triton.testing.do_bench(bench_fn, warmup=warmup, rep=rep)
+        if mode == "bwd":
+            O: torch.Tensor = fwd_fn()
+            dO = torch.randn_like(O)
+            def bench_fn() -> torch.Tensor: return O.backward(dO, retain_graph=True)
+        else:
+            bench_fn = fwd_fn
+
+        print(f"Benchmarking {mode} (N={N}, H={H}, B={B}, d={d}) for {provider} ...")
+        ms = triton.testing.do_bench(bench_fn, warmup=warmup, rep=rep)
+    except torch.cuda.OutOfMemoryError:
+        ms = float('NaN')
     return ms
-
-    # flops_per_matmul = 2.0 * B * H * N * N * d
-    # total_flops = 2 * flops_per_matmul
-    # if mode == "bwd":
-        # total_flops *= 2.5  # 2.0(bwd) + 0.5(recompute)
-    # return total_flops / ms * 1e-9
 
 
 if __name__ == "__main__":
