@@ -1,6 +1,6 @@
 import torch
 import triton
-from flash_attention_torch import FlashAttention
+from flash_attention_torch import FlashAttention, FlashAttentionDeterministic
 from flash_attn import flash_attn_func
 from flash_attention_openai_tutorial import _attention as openai_attention
 
@@ -23,11 +23,12 @@ for mode in MODES:
             x_names=["N"],
             x_vals=[2**i for i in range(7, 15)], # OpenAI Triton requires at least 2^7
             line_arg="provider",
-            line_vals=[f"my-triton-{dtype_str}", f"daolab-{dtype_str}", f"openai-{dtype_str}",
+            line_vals=[f"my-triton-det-{dtype_str}", f"my-triton-indet-{dtype_str}", f"daolab-{dtype_str}", f"openai-{dtype_str}",
                        f"torch-fa-{dtype_str}", f"torch-xformers-{dtype_str}", f"torch-math-{dtype_str}"],
-            line_names=[f"My Triton ~FA-2 [{dtype_str.upper()}]", f"DaoLab FA-2 [{dtype_str.upper()}]", f"OpenAI Triton FA-2 [{dtype_str.upper()}]",
+            line_names=[f"My Triton ~FA-2 Det. [{dtype_str.upper()}]", f"My Triton ~FA-2 Indet. [{dtype_str.upper()}]",
+                        f"DaoLab FA-2 [{dtype_str.upper()}]", f"OpenAI Triton FA-2 [{dtype_str.upper()}]",
                         f"Torch FA-2 [{dtype_str.upper()}]", f"Torch xFormers [{dtype_str.upper()}]", f"Torch Math [{dtype_str.upper()}]"],
-            styles=[("red", "-"), ("blue", "-"), ("green", "-"),
+            styles=[("red", "-"), ("red", "--"), ("blue", "-"), ("green", "-"),
                     ("black", "-"), ("black", "--"), ("black", "-.")],
             xlabel="N: Context size/Sequence length",
             ylabel="Mean Runtime [ms]",
@@ -54,8 +55,11 @@ def bench_flash_attention(B, H, N, d, mode, dtype, provider):
         Q = torch.randn(B, H, N, d, dtype=DTYPE, device=gpu, requires_grad=True)
         K = torch.randn(B, H, N, d, dtype=DTYPE, device=gpu, requires_grad=True)
         V = torch.randn(B, H, N, d, dtype=DTYPE, device=gpu, requires_grad=True)
-        if "triton" in provider:
-            def fwd_fn() -> torch.Tensor: return FlashAttention.apply(Q, K, V)
+        if "my-triton" in provider:
+            if "my-triton-indet" in provider:
+                def fwd_fn() -> torch.Tensor: return FlashAttention.apply(Q, K, V)
+            else:
+                def fwd_fn() -> torch.Tensor: return FlashAttentionDeterministic.apply(Q, K, V)
         elif "daolab" in provider:
             def fwd_fn() -> torch.Tensor: return flash_attn_func(Q, K, V)
         elif "torch" in provider:
