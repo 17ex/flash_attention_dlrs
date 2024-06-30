@@ -189,7 +189,6 @@ def flash_attention_backward(
         O,
         dO,
         L,
-        M,
         dev
         ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
@@ -207,12 +206,6 @@ def flash_attention_backward(
         Q = torch.nn.functional.pad(Q, pad, mode='constant', value=0.0)
         K = torch.nn.functional.pad(K, pad, mode='constant', value=0.0)
         V = torch.nn.functional.pad(V, pad, mode='constant', value=0.0)
-
-    # Determine block sizes
-    rows_bytesize = FP32_BYTESIZE * d_pow * 4 # Assuming FP32
-    block_size = triton.cdiv(M, rows_bytesize)
-    B_c = min(block_size, N)
-    B_r = min(block_size, d_pow)
 
     # Allocate output tensors
     dQ = torch.empty_like(Q)
