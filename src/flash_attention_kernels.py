@@ -23,6 +23,7 @@ def fwd_kernel(
         OB_stride, OH_stride, ON_stride, Od_stride,
         LB_stride, LH_stride,
         B, H, N: tl.constexpr, d: tl.constexpr, # B, H are here to re-tune the kernel when they change
+        dtype: tl.constexpr,
         B_c: tl.constexpr,
         B_r: tl.constexpr
         ):
@@ -77,8 +78,8 @@ def fwd_kernel(
     Q_i = tl.load(Q_i_ptr)
     # The other values only need to be stored (at the end),
     # so no need to load them. Instead, init. in SRAM directly.
-    O_i= tl.zeros_like(Q_i)
-    m_i= tl.full((B_r, 1), float('-inf'), tl.float32)
+    O_i= tl.zeros((B_r, d), dtype=tl.float32)
+    m_i= tl.full((B_r, 1), float('-inf'), dtype=tl.float32)
     l_i= tl.zeros_like(m_i)
 
     for _ in range(T_c):
@@ -100,7 +101,7 @@ def fwd_kernel(
 
         # Calculate new O_i
         O_i = (l_i * tl.exp(m_i - m_i_new) * O_i
-               + tl.exp(m_ij - m_i_new) * tl.dot(P_ij, V_j, input_precision=DOT_PRECISION)) \
+               + tl.exp(m_ij - m_i_new) * tl.dot(P_ij.to(V_ptr.type.element_ty), V_j, input_precision=DOT_PRECISION)) \
                        / l_i_new
 
         # Overwrite old l_i, m_i
@@ -115,8 +116,8 @@ def fwd_kernel(
     # Writes to O are not masked (I don't think that's really possible here),
     # whatever function called this should ensure to only read the appropriate sub-tensor
     L_i = m_i + tl.log(l_i)
-    tl.store(O_i_ptr, O_i)
-    tl.store(L_i_ptr, L_i)
+    tl.store(O_i_ptr, O_i.to(O_ptr.type.element_ty)) # Why is this not in the documentation? :(
+    tl.store(L_i_ptr, L_i.to(L_ptr.type.element_ty))
     return
 
 
@@ -134,6 +135,7 @@ def bwd_D_kernel(
     dOB_stride, dOH_stride, dON_stride, dOd_stride,
     DB_stride, DH_stride,
     B, H, N: tl.constexpr, d: tl.constexpr, # B, H are here to re-tune the kernel when they change
+    dtype: tl.constexpr,
     B_r: tl.constexpr,
     B_c: tl.constexpr # Unused, present because configs specify it.
         ) -> None:
@@ -173,7 +175,7 @@ def bwd_D_kernel(
     O_i = tl.load(O_i_ptr)
     dO_i = tl.load(dO_i_ptr)
     D_i = tl.sum(O_i * dO_i, axis=1, keep_dims=True)
-    tl.store(D_i_ptr, D_i)
+    tl.store(D_i_ptr, D_i.to(D_ptr.type.element_ty))
 
 
 @triton.autotune(
@@ -198,6 +200,7 @@ def bwd_kernel(
         lock_dQ_B_stride, lock_dQ_H_stride,
         written_dQ_B_stride, written_dQ_H_stride,
         B, H, N, d: tl.constexpr, # B, H are here to re-tune the kernel when they change
+        dtype: tl.constexpr,
         B_c: tl.constexpr, # TODO when N is constexpr, it for whatever reason hangs upon execution
         B_r: tl.constexpr
         ) -> None:
@@ -293,13 +296,13 @@ def bwd_kernel(
 
         P_ij = tl.exp(S_ij - L_i)
 
-        dV_j = dV_j + tl.dot(tl.trans(P_ij), dO_i, input_precision=DOT_PRECISION)
+        dV_j = dV_j + tl.dot(tl.trans(P_ij).to(V_ptr.type.element_ty),dO_i, input_precision=DOT_PRECISION, out_dtype=dV_ptr.type.element_ty)
 
         dP_ij = tl.dot(dO_i, tl.trans(V_j), input_precision=DOT_PRECISION)
 
-        dS_ij = P_ij * (dP_ij - D_i)
+        dS_ij = P_ij * (dP_ij - D_i.to(tl.float32))
 
-        dK_j = dK_j + tl.dot(tl.trans(dS_ij), Q_i, input_precision=DOT_PRECISION)
+        dK_j = dK_j + tl.dot(tl.trans(dS_ij).to(dK_ptr.type.element_ty), Q_i, input_precision=DOT_PRECISION, out_dtype=dK_ptr.type.element_ty)
 
         # Writes to dQ_i need to be guarded, since multiple threads can try to do this at the
         # same time, leading to race conditions.
@@ -320,14 +323,13 @@ def bwd_kernel(
         # ============== dQ_i (and written_dQ_i) Mem access is protected by a lock in this snippet.
         count = tl.load(written_dQ_i)
         if count == 0:
-        # if tl.atomic_xchg(written_dQ_i, 1) == 1:
             # dQ_i was not written before, so it is uninitialized
             dQ_i = tl.zeros_like(Q_i)
             tl.atomic_xchg(written_dQ_i, 1)
         else:
             # dQ_i was written to before
             dQ_i = tl.load(dQ_i_ptr)
-        dQ_i = dQ_i + tl.dot(dS_ij, K_j, input_precision=DOT_PRECISION)
+        dQ_i = dQ_i + tl.dot(dS_ij.to(K_ptr.type.element_ty), K_j, input_precision=DOT_PRECISION, out_dtype=dQ_ptr.type.element_ty)
         tl.store(dQ_i_ptr, dQ_i)
         # ==============
         # Release the lock again
@@ -343,6 +345,6 @@ def bwd_kernel(
         written_dQ_i += 1
 
 
-    tl.store(dK_j_ptr, dK_j)
+    tl.store(dK_j_ptr, dK_j.to(K_j_ptr.type.element_ty))
     tl.store(dV_j_ptr, dV_j)
     return
