@@ -47,9 +47,9 @@ def flash_attention_forward(
     OB_stride, OH_stride, ON_stride, Od_stride = O.stride()
     LB_stride, LH_stride, _, _ = L.stride()
 
-    grid = lambda META: (B, H, triton.cdiv(N, META['B_r']))
+    fwd_kernel_grid = lambda META: (B, H, triton.cdiv(N, META['B_r']))
 
-    forward_kernel[grid](
+    fwd_kernel[fwd_kernel_grid](
             Q,
             K,
             V,
@@ -72,7 +72,7 @@ def flash_attention_forward(
         prune_configs_by={"early_config_prune": autotune_configs.fwd_conf_prune}
 )
 @triton.jit
-def forward_kernel(
+def fwd_kernel(
         Q_ptr,
         K_ptr,
         V_ptr,
@@ -255,8 +255,8 @@ def flash_attention_backward(
             B_r = 16 # TODO tune me
             )
 
-    backward_kernel_grid = lambda META: (B, H, triton.cdiv(N, META['B_c']))
-    backward_kernel[backward_kernel_grid](
+    bwd_kernel_grid = lambda META: (B, H, triton.cdiv(N, META['B_c']))
+    bwd_kernel[bwd_kernel_grid](
             Q, K, V,
             dQ, dK, dV, dO,
             L, D,
@@ -331,7 +331,7 @@ def bwd_D_kernel(
         prune_configs_by={"early_config_prune": autotune_configs.bwd_conf_prune}
 )
 @triton.jit
-def backward_kernel(
+def bwd_kernel(
         Q_ptr, K_ptr, V_ptr,
         dQ_ptr, dK_ptr, dV_ptr, dO_ptr,
         L_ptr, D_ptr,
