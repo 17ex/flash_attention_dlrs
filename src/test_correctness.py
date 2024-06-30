@@ -20,6 +20,9 @@ test_result_fwd = torch.zeros(NUM_TESTS, dtype=torch.int32)
 test_result_bwd_Q = torch.zeros(NUM_TESTS, dtype=torch.int32)
 test_result_bwd_K = torch.zeros(NUM_TESTS, dtype=torch.int32)
 test_result_bwd_V = torch.zeros(NUM_TESTS, dtype=torch.int32)
+test_result_bwd_det_Q = torch.zeros(NUM_TESTS, dtype=torch.int32)
+test_result_bwd_det_K = torch.zeros(NUM_TESTS, dtype=torch.int32)
+test_result_bwd_det_V = torch.zeros(NUM_TESTS, dtype=torch.int32)
 
 for test in range(NUM_TESTS):
     torch.manual_seed(test)
@@ -50,16 +53,33 @@ for test in range(NUM_TESTS):
             O_flash,
             dO,
             L_flash,
-            dev=gpu
+            dev=gpu,
+            deterministic=False
             )
-
     # Somewhere around this ballpark are the tolerances.
     # Some tests begin to fail for a little tighter (absolute) tolerances.
     test_result_bwd_Q[test] = torch.allclose(dQ_torch, dQ_flash, atol=9e-4, rtol=1e-5)
     test_result_bwd_K[test] = torch.allclose(dK_torch, dK_flash, atol=7e-4, rtol=1e-5)
     test_result_bwd_V[test] = torch.allclose(dV_torch, dV_flash, atol=7e-5, rtol=1e-5)
 
+    dQ_flash, dK_flash, dV_flash = flash_attention_backward(
+            Q,
+            K,
+            V,
+            O_flash,
+            dO,
+            L_flash,
+            dev=gpu,
+            deterministic=True
+            )
+    test_result_bwd_det_Q[test] = torch.allclose(dQ_torch, dQ_flash, atol=9e-4, rtol=1e-5)
+    test_result_bwd_det_K[test] = torch.allclose(dK_torch, dK_flash, atol=7e-4, rtol=1e-5)
+    test_result_bwd_det_V[test] = torch.allclose(dV_torch, dV_flash, atol=7e-5, rtol=1e-5)
+
 print(f"{test_result_fwd.sum().item()} out of {NUM_TESTS} forward tests succeeded!")
 print(f"{test_result_bwd_Q.sum().item()} out of {NUM_TESTS} Q backward tests succeeded!")
 print(f"{test_result_bwd_K.sum().item()} out of {NUM_TESTS} K backward tests succeeded!")
 print(f"{test_result_bwd_V.sum().item()} out of {NUM_TESTS} V backward tests succeeded!")
+print(f"{test_result_bwd_det_Q.sum().item()} out of {NUM_TESTS} Q deterministic backward tests succeeded!")
+print(f"{test_result_bwd_det_K.sum().item()} out of {NUM_TESTS} K deterministic backward tests succeeded!")
+print(f"{test_result_bwd_det_V.sum().item()} out of {NUM_TESTS} V deterministic backward tests succeeded!")
