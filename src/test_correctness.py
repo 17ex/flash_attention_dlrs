@@ -1,4 +1,4 @@
-from flash_attention import flash_attention_forward, flash_attention_backward
+from flash_attention_wrappers import flash_attention_forward, flash_attention_backward
 import torch
 
 # This file is a script that should test the Flash Attention implementation

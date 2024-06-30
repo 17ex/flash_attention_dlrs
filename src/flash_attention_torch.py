@@ -1,6 +1,6 @@
 import torch
 import triton
-import flash_attention
+import flash_attention_kernels
 
 SUPPORTED_DTYPE=torch.float32
 MIN_TENSOR_SIZE=16
@@ -44,7 +44,7 @@ class FlashAttention(torch.autograd.Function):
 
         fwd_kernel_grid = lambda META: (B, H, triton.cdiv(N, META['B_r']))
 
-        flash_attention.fwd_kernel[fwd_kernel_grid](
+        flash_attention_kernels.fwd_kernel[fwd_kernel_grid](
                 Q,
                 K,
                 V,
@@ -117,7 +117,7 @@ class FlashAttention(torch.autograd.Function):
 
         # Precompute D
         bwd_D_grid = lambda META: (B, H, triton.cdiv(N, META['B_r']))
-        flash_attention.bwd_D_kernel[bwd_D_grid](
+        flash_attention_kernels.bwd_D_kernel[bwd_D_grid](
                 O, dO, D,
                 OB_stride, OH_stride, ON_stride, Od_stride,
                 dOB_stride, dOH_stride, dON_stride, dOd_stride,
@@ -127,7 +127,7 @@ class FlashAttention(torch.autograd.Function):
 
         # Launch backward pass kernel
         bwd_kernel_grid = lambda META: (B, H, triton.cdiv(N, META['B_c']))
-        flash_attention.bwd_kernel[bwd_kernel_grid](
+        flash_attention_kernels.bwd_kernel[bwd_kernel_grid](
                 Q, K, V,
                 dQ, dK, dV, dO,
                 L, D,
