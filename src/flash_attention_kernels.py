@@ -89,7 +89,7 @@ def fwd_kernel(
     K_j = tl.load(K_j_ptr)
     V_j = tl.load(V_j_ptr)
     S_ij = tl.dot(Q_i, tl.trans(K_j), input_precision=DOT_PRECISION) * LOG2_e
-    m_i = tl.sum(S_ij, axis=1, keep_dims=1) # == tl.maximum(-inf, tl.sum(...))
+    m_i = tl.max(S_ij, axis=1, keep_dims=1) # == tl.maximum(-inf, tl.max(...))
     P_ij = tl.exp2(S_ij - m_i) # exp2 is more stable than exp?
     l_i = tl.sum(P_ij, axis=1, keep_dims=1)
     O_i = tl.dot(P_ij.to(tl.float32, FP_ROUNDING_OPT),
@@ -103,7 +103,7 @@ def fwd_kernel(
         V_j = tl.load(V_j_ptr)
 
         S_ij = tl.dot(Q_i, tl.trans(K_j), input_precision=DOT_PRECISION) * LOG2_e
-        m_ij = tl.maximum(m_i, tl.sum(S_ij, axis=1, keep_dims=1))
+        m_ij = tl.maximum(m_i, tl.max(S_ij, axis=1, keep_dims=1))
         P_ij = tl.exp2(S_ij - m_ij) * LOG2_e
         coeff = tl.exp2(m_i - m_ij) * LOG2_e
         l_ij = coeff * l_i + tl.sum(P_ij, axis=1, keep_dims=1)
