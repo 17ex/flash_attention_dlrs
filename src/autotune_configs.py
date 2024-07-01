@@ -15,7 +15,7 @@ SRAM = 99 * 1024
 # If there are still OutOfResources errors, then that means this
 # estimation is garbage, in which case try to increase this factor,
 # which directly applies to the estimated required SRAM.
-SAFETY_MARGIN_MEM_FACTOR = 1
+SAFETY_MARGIN_MEM_FACTOR = 0.4
 
 def is_cuda() -> bool:
     return triton.runtime.driver.active.get_current_target().backend == "cuda"
@@ -59,6 +59,10 @@ def get_autotune_config_cuda() -> list[triton.Config]:
             triton.Config({'B_r': 64, 'B_c': 32}, num_stages=4, num_warps=8),
             triton.Config({'B_r': 64, 'B_c': 64}, num_stages=1, num_warps=4),
             triton.Config({'B_r': 64, 'B_c': 64}, num_stages=1, num_warps=8),
+            triton.Config({'B_r': 64, 'B_c': 64}, num_stages=2, num_warps=4),
+            triton.Config({'B_r': 64, 'B_c': 64}, num_stages=2, num_warps=8),
+            triton.Config({'B_r': 64, 'B_c': 64}, num_stages=3, num_warps=4),
+            triton.Config({'B_r': 64, 'B_c': 64}, num_stages=3, num_warps=8),
             triton.Config({'B_r': 128, 'B_c': 32}, num_stages=1, num_warps=4),
             triton.Config({'B_r': 128, 'B_c': 32}, num_stages=1, num_warps=8),
             triton.Config({'B_r': 128, 'B_c': 32}, num_stages=2, num_warps=4),
@@ -201,7 +205,7 @@ def bwd_SRAM_needed(N, d, B_r, B_c) -> float:
     # This is only in theory. In practice, much more SRAM is used,
     # probably because the code is very non-optimal (eg. still FA-1 math atm),
     # and SRAM is also needed for lots of things other than the block matrices/vectors
-    return 2 * (N//4 + 4 * B_r * d + 4 * B_c * d + 2 * B_r + 3 * B_c * B_r)
+    return 2 * (N//4 + 4 * B_r * d + 4 * B_c * d + 2 * B_r + 3 * B_c * B_r) * SAFETY_MARGIN_MEM_FACTOR
 
 
 def is_bwd_candidate(config: triton.Config, N, d) -> bool:
