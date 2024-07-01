@@ -1,9 +1,12 @@
+import numpy as np
 import triton
 import triton.language as tl
 import autotune_configs
 
 DOT_PRECISION: tl.constexpr = "ieee"
 ORDER: tl.constexpr = (0, 1)
+FP_ROUNDING_OPT: tl.constexpr = "rtne" # Alternative: "rtz"
+LOG2_e: tl.constexpr = np.log2(np.e)
 
 @triton.autotune(
         configs=autotune_configs.get_autotune_config(),
@@ -78,46 +81,43 @@ def fwd_kernel(
     Q_i = tl.load(Q_i_ptr)
     # The other values only need to be stored (at the end),
     # so no need to load them. Instead, init. in SRAM directly.
-    O_i= tl.zeros((B_r, d), dtype=tl.float32)
-    m_i= tl.full((B_r, 1), float('-inf'), dtype=tl.float32)
-    l_i= tl.zeros_like(m_i)
+    # O_i= tl.zeros((B_r, d), dtype=tl.float32)
+    # m_i= tl.full((B_r, 1), float('-inf'), dtype=tl.float32)
+    # l_i= tl.zeros_like(m_i)
 
-    for _ in range(T_c):
+    # Unroll first loop iteration
+    K_j = tl.load(K_j_ptr)
+    V_j = tl.load(V_j_ptr)
+    S_ij = tl.dot(Q_i, tl.trans(K_j), input_precision=DOT_PRECISION) * LOG2_e
+    m_i = tl.sum(S_ij, axis=1, keep_dims=1) # == tl.maximum(-inf, tl.sum(...))
+    P_ij = tl.exp2(S_ij - m_i) # exp2 is more stable than exp?
+    l_i = tl.sum(P_ij, axis=1, keep_dims=1)
+    O_i = tl.dot(P_ij.to(tl.float32, FP_ROUNDING_OPT),
+                 V_j.to(tl.float32), input_precision=DOT_PRECISION)
+
+    # tl.device_print("j", T_c)
+    for _ in tl.range(1, arg2=T_c, step=1):
+        K_j_ptr = tl.advance(K_j_ptr, (B_c, 0))
+        V_j_ptr = tl.advance(V_j_ptr, (B_c, 0))
         K_j = tl.load(K_j_ptr)
         V_j = tl.load(V_j_ptr)
 
-        # Compute Q_i K_j^T
-        S_ij = tl.dot(Q_i, tl.trans(K_j), input_precision=DOT_PRECISION)
+        S_ij = tl.dot(Q_i, tl.trans(K_j), input_precision=DOT_PRECISION) * LOG2_e
+        m_ij = tl.maximum(m_i, tl.sum(S_ij, axis=1, keep_dims=1))
+        P_ij = tl.exp2(S_ij - m_ij) * LOG2_e
+        coeff = tl.exp2(m_i - m_ij) * LOG2_e
+        l_ij = coeff * l_i + tl.sum(P_ij, axis=1, keep_dims=1)
+        O_i = O_i / coeff
+        O_i = tl.dot(P_ij, V_j, acc=O_i, input_precision=DOT_PRECISION)
+        l_i = l_ij
+        m_i = m_ij
 
-        # Compute m_ij, P_ij, l_ij
-        m_ij = tl.max(S_ij, axis=1, keep_dims=True)
-        P_ij = tl.exp(S_ij - m_ij)
-        l_ij = tl.sum(P_ij, axis=1, keep_dims=True)
-
-        # Compute m_i_new, l_i_new
-        m_i_new = tl.maximum(m_i, m_ij)
-        l_i_new = tl.exp(m_i - m_i_new) * l_i \
-                + tl.exp(m_ij - m_i_new) * l_ij
-
-        # Calculate new O_i
-        O_i = (l_i * tl.exp(m_i - m_i_new) * O_i
-               + tl.exp(m_ij - m_i_new) * tl.dot(P_ij.to(V_ptr.type.element_ty), V_j, input_precision=DOT_PRECISION)) \
-                       / l_i_new
-
-        # Overwrite old l_i, m_i
-        l_i = l_i_new
-        m_i = m_i_new
-
-        K_j_ptr = tl.advance(K_j_ptr, (B_c, 0))
-        V_j_ptr = tl.advance(V_j_ptr, (B_c, 0))
-
-    # This loop/kernel is done (looped over all j for this i),
-    # store the results and exit
     # Writes to O are not masked (I don't think that's really possible here),
     # whatever function called this should ensure to only read the appropriate sub-tensor
-    L_i = m_i + tl.log(l_i)
-    tl.store(O_i_ptr, O_i.to(O_ptr.type.element_ty)) # Why is this not in the documentation? :(
-    tl.store(L_i_ptr, L_i.to(L_ptr.type.element_ty))
+    O_i = O_i / l_i
+    L_i = m_i + tl.log(l_i) + tl.log(LOG2_e)
+    tl.store(O_i_ptr, O_i.to(O_ptr.type.element_ty, FP_ROUNDING_OPT))  # Why is this to/cast not in the documentation? :(
+    tl.store(L_i_ptr, L_i.to(L_ptr.type.element_ty)) # This is a bit aggravating
     return
 
 
