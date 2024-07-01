@@ -353,7 +353,7 @@ def bwd_deterministic_kernel(
         dVB_stride, dVH_stride, dVN_stride, dVd_stride,
         dOB_stride, dOH_stride, dON_stride, dOd_stride,
         LB_stride, LH_stride, DB_stride, DH_stride,
-        written_dQ_B_stride, written_dQ_H_stride,
+        written_dQ_B_stride, written_dQ_H_stride, written_dQ_Blk_stride,
         B, H, N, d: tl.constexpr, # B, H are here to re-tune the kernel when they change
         dtype: tl.constexpr,
         B_c: tl.constexpr, # TODO when N is constexpr, it for whatever reason hangs upon execution
@@ -467,21 +467,20 @@ def bwd_deterministic_kernel(
         # This is synchronized by having thread j write j+1 to that pointer
         # after writing to dQ_i, and thread j+1 will wait until that value turns
         # to j+1, after which thread j+1 will write to dQ_i.
-        while tl.load(written_dQ_i) != j:
-            pass
-        # ============== dQ_i access is protected by a lock in this snippet.
         if j == 0:
             # This thread is the first to write to dQ_i, so it also has to initialize it.
             dQ_i = tl.zeros_like(Q_i)
             tl.atomic_xchg(written_dQ_i, 1)
         else:
             # dQ_i was written to before by another thread
+            while tl.load(written_dQ_i) != j:
+                pass
             dQ_i = tl.load(dQ_i_ptr)
-        dQ_i = dQ_i + tl.dot(dS_ij.to(K_ptr.type.element_ty), K_j, input_precision=DOT_PRECISION, out_dtype=dQ_ptr.type.element_ty)
-        tl.store(dQ_i_ptr, dQ_i)
-        # ==============
-        # Signal that next thread can begin
-        tl.atomic_add(written_dQ_i, 1)
+            dQ_i = dQ_i + tl.dot(dS_ij.to(K_ptr.type.element_ty), K_j,
+                                 input_precision=DOT_PRECISION, out_dtype=dQ_ptr.type.element_ty)
+            tl.store(dQ_i_ptr, dQ_i)
+            # Signal that next thread can begin
+            tl.atomic_add(written_dQ_i, 1)
 
         # Advance the *_i_ptrs
         Q_i_ptr = tl.advance(Q_i_ptr, (B_r, 0))
@@ -489,6 +488,7 @@ def bwd_deterministic_kernel(
         dQ_i_ptr = tl.advance(dQ_i_ptr, (B_r, 0))
         L_i_ptr = tl.advance(L_i_ptr, (B_r, 0))
         D_i_ptr = tl.advance(D_i_ptr, (B_r, 0))
+        written_dQ_i += written_dQ_Blk_stride
 
 
     tl.store(dK_j_ptr, dK_j.to(K_j_ptr.type.element_ty))

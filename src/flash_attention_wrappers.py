@@ -120,8 +120,8 @@ def flash_attention_backward(
     bwd_kernel_grid = lambda META: (triton.cdiv(N, META['B_c']), B, H)
 
     if deterministic:
-        written_dQ = torch.empty(B, H, dtype=torch.int32, device=dev)
-        written_dQ_B_stride, written_dQ_H_stride = written_dQ.stride()
+        written_dQ = torch.empty(B, H, N // 8, dtype=torch.int32, device=dev)
+        written_dQ_B_stride, written_dQ_H_stride, written_dQ_Blk_stride = written_dQ.stride()
 
         bwd_deterministic_kernel[bwd_kernel_grid](
                 Q, K, V,
@@ -136,7 +136,7 @@ def flash_attention_backward(
                 dVB_stride, dVH_stride, dVN_stride, dVd_stride,
                 dOB_stride, dOH_stride, dON_stride, dOd_stride,
                 LB_stride, LH_stride, DB_stride, DH_stride,
-                written_dQ_B_stride, written_dQ_H_stride,
+                written_dQ_B_stride, written_dQ_H_stride, written_dQ_Blk_stride,
                 B, H, N, d,
                 convert_triton_dtype(Q.dtype)
                 )
