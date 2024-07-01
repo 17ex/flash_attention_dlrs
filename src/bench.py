@@ -23,7 +23,7 @@ for mode in MODES:
     bench_configs.append(
         triton.testing.Benchmark(
             x_names=["N"],
-            x_vals=[2**i for i in range(7, 15)], # OpenAI Triton requires at least 2^7
+            x_vals=[2**i for i in range(7, 16)], # OpenAI Triton requires at least 2^7
             line_arg="provider",
             line_vals=[f"my-triton-det-{dtype_str}", f"my-triton-indet-{dtype_str}", f"daolab-{dtype_str}", f"openai-{dtype_str}",
                        f"torch-fa-{dtype_str}", f"torch-xformers-{dtype_str}", f"torch-math-{dtype_str}"],
@@ -34,8 +34,6 @@ for mode in MODES:
                     ("black", "-"), ("black", "--"), ("black", "-.")],
             xlabel="N: Context size/Sequence length",
             ylabel="Mean Runtime [ms]",
-            # x_log=False,
-            # y_log=False,
             plot_name=f"fused-attention-B{B}-B{H}-d{d}-{mode}-{dtype_str}",
             args={
                 "B": B,
