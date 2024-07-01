@@ -93,10 +93,9 @@ def fwd_kernel(
         m_ij = tl.maximum(m_i, tl.max(S_ij, axis=1, keep_dims=1))
         P_ij = tl.exp2(S_ij - m_ij)
         coeff = tl.exp2(m_i - m_ij)
-        l_ij = coeff * l_i + tl.sum(P_ij, axis=1, keep_dims=1)
+        l_i = coeff * l_i + tl.sum(P_ij, axis=1, keep_dims=1)
         O_i = O_i * coeff # TODO is this wrong in the FA-2 paper?
         O_i = tl.dot(P_ij.to(V_j.dtype, FP_ROUNDING_OPT), V_j, acc=O_i, input_precision=DOT_PRECISION)
-        l_i = l_ij
         m_i = m_ij
         K_j_ptr = tl.advance(K_j_ptr, (B_c, 0))
         V_j_ptr = tl.advance(V_j_ptr, (B_c, 0))
@@ -104,9 +103,9 @@ def fwd_kernel(
     # Writes to O are not masked (I don't think that's really possible here),
     # whatever function called this should ensure to only read the appropriate sub-tensor
     O_i = O_i / l_i
-    L_i = m_i + tl.log(l_i) + tl.log(LOG2_e)
-    tl.store(O_i_ptr, O_i.to(O_ptr.type.element_ty, FP_ROUNDING_OPT))  # Why is this to/cast not in the documentation? :(
-    tl.store(L_i_ptr, L_i.to(L_ptr.type.element_ty)) # This is a bit aggravating
+    L_i = m_i + tl.log2(l_i)
+    tl.store(O_i_ptr, O_i.to(O_ptr.type.element_ty, FP_ROUNDING_OPT)) # Why is to/cast not in the documentation? :(
+    tl.store(L_i_ptr, L_i.to(L_ptr.type.element_ty))           # This is a bit aggravating
     return
 
 
@@ -281,9 +280,9 @@ def bwd_kernel(
         L_i = tl.load(L_i_ptr)
         D_i = tl.load(D_i_ptr)
 
-        S_ij = tl.dot(Q_i, tl.trans(K_j), input_precision=DOT_PRECISION)
+        S_ij = tl.dot(Q_i, tl.trans(K_j), input_precision=DOT_PRECISION) * LOG2_e
 
-        P_ij = tl.exp(S_ij - L_i)
+        P_ij = tl.exp2(S_ij - L_i)
 
         dV_j = dV_j + tl.dot(tl.trans(P_ij).to(V_ptr.type.element_ty),dO_i, input_precision=DOT_PRECISION, out_dtype=dV_ptr.type.element_ty)
 
@@ -450,9 +449,9 @@ def bwd_deterministic_kernel(
         L_i = tl.load(L_i_ptr)
         D_i = tl.load(D_i_ptr)
 
-        S_ij = tl.dot(Q_i, tl.trans(K_j), input_precision=DOT_PRECISION)
+        S_ij = tl.dot(Q_i, tl.trans(K_j), input_precision=DOT_PRECISION) * LOG2_e
 
-        P_ij = tl.exp(S_ij - L_i)
+        P_ij = tl.exp2(S_ij - L_i)
 
         dV_j = dV_j + tl.dot(tl.trans(P_ij).to(V_ptr.type.element_ty),dO_i, input_precision=DOT_PRECISION, out_dtype=dV_ptr.type.element_ty)
 
