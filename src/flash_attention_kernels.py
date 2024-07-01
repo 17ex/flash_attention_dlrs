@@ -107,7 +107,7 @@ def fwd_kernel(
         P_ij = tl.exp2(S_ij - m_ij) * LOG2_e
         coeff = tl.exp2(m_i - m_ij) * LOG2_e
         l_ij = coeff * l_i + tl.sum(P_ij, axis=1, keep_dims=1)
-        O_i = O_i / coeff
+        O_i = O_i * coeff # TODO is this wrong in the FA-2 paper?
         O_i = tl.dot(P_ij, V_j, acc=O_i, input_precision=DOT_PRECISION)
         l_i = l_ij
         m_i = m_ij
