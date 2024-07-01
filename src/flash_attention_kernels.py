@@ -92,8 +92,8 @@ def fwd_kernel(
     m_i = tl.max(S_ij, axis=1, keep_dims=1) # == tl.maximum(-inf, tl.max(...))
     P_ij = tl.exp2(S_ij - m_i) # exp2 is more stable than exp?
     l_i = tl.sum(P_ij, axis=1, keep_dims=1)
-    O_i = tl.dot(P_ij.to(tl.float32, FP_ROUNDING_OPT),
-                 V_j.to(tl.float32), input_precision=DOT_PRECISION)
+    O_i = tl.dot(P_ij.to(V_j.dtype, FP_ROUNDING_OPT),
+                 V_j, input_precision=DOT_PRECISION)
 
     # tl.device_print("j", T_c)
     for _ in tl.range(1, arg2=T_c, step=1):
@@ -108,7 +108,7 @@ def fwd_kernel(
         coeff = tl.exp2(m_i - m_ij) * LOG2_e
         l_ij = coeff * l_i + tl.sum(P_ij, axis=1, keep_dims=1)
         O_i = O_i * coeff # TODO is this wrong in the FA-2 paper?
-        O_i = tl.dot(P_ij, V_j, acc=O_i, input_precision=DOT_PRECISION)
+        O_i = tl.dot(P_ij.to(V_j.dtype, FP_ROUNDING_OPT), V_j, acc=O_i, input_precision=DOT_PRECISION)
         l_i = l_ij
         m_i = m_ij
 
