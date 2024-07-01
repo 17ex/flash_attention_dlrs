@@ -11,6 +11,7 @@ H = 32
 N = 256
 d = 128
 NUM_TESTS = 200
+DTYPE = torch.float32 # FP32 is better for testing accuracy.
 
 # Use CUDA. I don't have a non-cuda (eg. ROCm) GPU on which to test this,
 # so I have no clue if my implementation supports non-CUDA targets.
@@ -26,9 +27,9 @@ test_result_bwd_det_V = torch.zeros(NUM_TESTS, dtype=torch.int32)
 
 for test in range(NUM_TESTS):
     torch.manual_seed(test)
-    Q = torch.randn(B, H, N, d, device=gpu, requires_grad=True)
-    K = torch.randn(B, H, N, d, device=gpu, requires_grad=True)
-    V = torch.randn(B, H, N, d, device=gpu, requires_grad=True)
+    Q = torch.randn(B, H, N, d, device=gpu, requires_grad=True, dtype=DTYPE)
+    K = torch.randn(B, H, N, d, device=gpu, requires_grad=True, dtype=DTYPE)
+    V = torch.randn(B, H, N, d, device=gpu, requires_grad=True, dtype=DTYPE)
     O_torch = torch.nn.functional.scaled_dot_product_attention(Q, K, V, scale=1)
     O_flash, L_flash = flash_attention_forward(
             Q,
@@ -56,8 +57,6 @@ for test in range(NUM_TESTS):
             dev=gpu,
             deterministic=False
             )
-    # Somewhere around this ballpark are the tolerances.
-    # Some tests begin to fail for a little tighter (absolute) tolerances.
     test_result_bwd_Q[test] = torch.allclose(dQ_torch, dQ_flash, atol=9e-4, rtol=1e-5)
     test_result_bwd_K[test] = torch.allclose(dK_torch, dK_flash, atol=7e-4, rtol=1e-5)
     test_result_bwd_V[test] = torch.allclose(dV_torch, dV_flash, atol=7e-5, rtol=1e-5)
