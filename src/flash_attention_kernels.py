@@ -242,13 +242,13 @@ def bwd_kernel(
             (0, 0),
             (B_r, d),
             ORDER)
-    dQ_i_ptr = tl.make_block_ptr(
-            dQ_ptr + b * dQB_stride + h * dQH_stride,
-            (N, d),
-            (dQN_stride, dQd_stride),
-            (0, 0),
-            (B_r, d),
-            ORDER)
+    # dQ_i_ptr = tl.make_block_ptr(
+            # dQ_ptr + b * dQB_stride + h * dQH_stride,
+            # (N, d),
+            # (dQN_stride, dQd_stride),
+            # (0, 0),
+            # (B_r, d),
+            # ORDER)
     L_i_ptr = tl.make_block_ptr(
             L_ptr + b * LB_stride + h * LH_stride,
             (N, 1),
@@ -271,7 +271,16 @@ def bwd_kernel(
 
     lock_dQ_i = lock_dQ + b * lock_dQ_B_stride + h * lock_dQ_H_stride
     written_dQ_i = written_dQ + b * written_dQ_B_stride + h * written_dQ_H_stride
-
+    dQ_i_ptr = tl.make_block_ptr(
+            dQ_ptr + b * dQB_stride + h * dQH_stride,
+            (N, d),
+            (dQN_stride, dQd_stride),
+            (0, 0),
+            (B_r, d),
+            ORDER)
+    dQ_i_ptr_N_incr = tl.arange(0, B_r)[:, None] * dQN_stride
+    dQ_i_ptr = (dQ_ptr + b * dQB_stride + h * dQH_stride
+                + tl.arange(0, d)[None, :] * dQd_stride + dQ_i_ptr_N_incr)
     for _ in range(T_r):
 
         # Load *_i blocks
@@ -292,6 +301,11 @@ def bwd_kernel(
 
         dK_j = dK_j + tl.dot(tl.trans(dS_ij).to(dK_ptr.type.element_ty), Q_i, input_precision=DOT_PRECISION, out_dtype=dK_ptr.type.element_ty)
 
+        dQ_i_add = tl.dot(dS_ij.to(K_ptr.type.element_ty), K_j,
+                          input_precision=DOT_PRECISION, out_dtype=dQ_ptr.type.element_ty)
+        tl.atomic_add(dQ_i_ptr, dQ_i_add)
+
+
         # Writes to dQ_i need to be guarded, since multiple threads can try to do this at the
         # same time, leading to race conditions.
         # The below code guardes against this using a locking strategy to ensure
@@ -302,31 +316,32 @@ def bwd_kernel(
         # After that, no matter how often it's run, the non-deterministic
         # dQ is always within very small tolerances.
         # Why is that the case? This needs to be fixed
-        while tl.atomic_cas(lock_dQ_i, 0, 1) == 1:
-            pass
-        # ============== dQ_i (and written_dQ_i) Mem access is protected by a lock in this snippet.
-        count = tl.load(written_dQ_i)
-        if count == 0:
-            # dQ_i was not written before, so it is uninitialized
-            dQ_i = tl.zeros_like(Q_i)
-            tl.atomic_xchg(written_dQ_i, 1)
-        else:
-            # dQ_i was written to before
-            dQ_i = tl.load(dQ_i_ptr)
-        dQ_i = dQ_i + tl.dot(dS_ij.to(K_ptr.type.element_ty), K_j, input_precision=DOT_PRECISION, out_dtype=dQ_ptr.type.element_ty)
-        tl.store(dQ_i_ptr, dQ_i)
-        # ==============
-        # Release the lock again
-        tl.atomic_xchg(lock_dQ_i, 0)
+        # while tl.atomic_cas(lock_dQ_i, 0, 1) == 1:
+            # pass
+        # # ============== dQ_i (and written_dQ_i) Mem access is protected by a lock in this snippet.
+        # count = tl.load(written_dQ_i)
+        # if count == 0:
+            # # dQ_i was not written before, so it is uninitialized
+            # dQ_i = tl.zeros_like(Q_i)
+            # tl.atomic_xchg(written_dQ_i, 1)
+        # else:
+            # # dQ_i was written to before
+            # dQ_i = tl.load(dQ_i_ptr)
+        # dQ_i = dQ_i + tl.dot(dS_ij.to(K_ptr.type.element_ty), K_j, input_precision=DOT_PRECISION, out_dtype=dQ_ptr.type.element_ty)
+        # tl.store(dQ_i_ptr, dQ_i)
+        # # ==============
+        # # Release the lock again
+        # tl.atomic_xchg(lock_dQ_i, 0)
 
         # Advance the *_i_ptrs
         Q_i_ptr = tl.advance(Q_i_ptr, (B_r, 0))
         dO_i_ptr = tl.advance(dO_i_ptr, (B_r, 0))
-        dQ_i_ptr = tl.advance(dQ_i_ptr, (B_r, 0))
+        # dQ_i_ptr = tl.advance(dQ_i_ptr, (B_r, 0))
         L_i_ptr = tl.advance(L_i_ptr, (B_r, 0))
         D_i_ptr = tl.advance(D_i_ptr, (B_r, 0))
-        lock_dQ_i += 1
-        written_dQ_i += 1
+        # lock_dQ_i += 1
+        # written_dQ_i += 1
+        dQ_i_ptr += dQ_i_ptr_N_incr
 
 
     tl.store(dK_j_ptr, dK_j.to(K_j_ptr.type.element_ty))

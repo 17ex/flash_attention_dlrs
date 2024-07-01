@@ -148,6 +148,8 @@ def flash_attention_backward(
         # and I don't know how to specify that a literal should be an
         # int64 and not int32. I don't even know if you can do this easily.
         # So, instead we double the length, and only index every 2nd element.
+        dQ = torch.zeros_like(Q)
+        dQB_stride, dQH_stride, dQN_stride, dQd_stride = dQ.stride()
         comm_ptr_len = N // 8 # Because 16 is smallest possible val of B_r, and we need double length
         lock_dQ = torch.zeros(B, H, comm_ptr_len, dtype=torch.int32, device=dev)
         written_dQ = torch.zeros(B, H, comm_ptr_len, dtype=torch.int32, device=dev)
