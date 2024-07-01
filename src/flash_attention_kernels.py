@@ -81,36 +81,25 @@ def fwd_kernel(
     Q_i = tl.load(Q_i_ptr)
     # The other values only need to be stored (at the end),
     # so no need to load them. Instead, init. in SRAM directly.
-    # O_i= tl.zeros((B_r, d), dtype=tl.float32)
-    # m_i= tl.full((B_r, 1), float('-inf'), dtype=tl.float32)
-    # l_i= tl.zeros_like(m_i)
+    O_i= tl.zeros((B_r, d), dtype=tl.float32)
+    m_i= tl.full((B_r, 1), float('-inf'), dtype=tl.float32)
+    l_i= tl.zeros_like(m_i)
 
-    # Unroll first loop iteration
-    K_j = tl.load(K_j_ptr)
-    V_j = tl.load(V_j_ptr)
-    S_ij = tl.dot(Q_i, tl.trans(K_j), input_precision=DOT_PRECISION) * LOG2_e
-    m_i = tl.max(S_ij, axis=1, keep_dims=1) # == tl.maximum(-inf, tl.max(...))
-    P_ij = tl.exp2(S_ij - m_i) # exp2 is more stable than exp?
-    l_i = tl.sum(P_ij, axis=1, keep_dims=1)
-    O_i = tl.dot(P_ij.to(V_j.dtype, FP_ROUNDING_OPT),
-                 V_j, input_precision=DOT_PRECISION)
-
-    # tl.device_print("j", T_c)
-    for _ in tl.range(1, arg2=T_c, step=1):
-        K_j_ptr = tl.advance(K_j_ptr, (B_c, 0))
-        V_j_ptr = tl.advance(V_j_ptr, (B_c, 0))
+    for _ in tl.range(T_c):
         K_j = tl.load(K_j_ptr)
         V_j = tl.load(V_j_ptr)
 
         S_ij = tl.dot(Q_i, tl.trans(K_j), input_precision=DOT_PRECISION) * LOG2_e
         m_ij = tl.maximum(m_i, tl.max(S_ij, axis=1, keep_dims=1))
-        P_ij = tl.exp2(S_ij - m_ij) * LOG2_e
-        coeff = tl.exp2(m_i - m_ij) * LOG2_e
+        P_ij = tl.exp2(S_ij - m_ij)
+        coeff = tl.exp2(m_i - m_ij)
         l_ij = coeff * l_i + tl.sum(P_ij, axis=1, keep_dims=1)
         O_i = O_i * coeff # TODO is this wrong in the FA-2 paper?
         O_i = tl.dot(P_ij.to(V_j.dtype, FP_ROUNDING_OPT), V_j, acc=O_i, input_precision=DOT_PRECISION)
         l_i = l_ij
         m_i = m_ij
+        K_j_ptr = tl.advance(K_j_ptr, (B_c, 0))
+        V_j_ptr = tl.advance(V_j_ptr, (B_c, 0))
 
     # Writes to O are not masked (I don't think that's really possible here),
     # whatever function called this should ensure to only read the appropriate sub-tensor
