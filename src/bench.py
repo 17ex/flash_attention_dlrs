@@ -10,6 +10,8 @@ d = 32
 
 DTYPE = torch.float16
 MODES = ["fwd", "bwd"]
+# MODES = ["fwd"]
+# MODES = ["bwd"]
 torch.manual_seed(42)
 
 # CUDA only
@@ -34,7 +36,7 @@ for mode in MODES:
             ylabel="Mean Runtime [ms]",
             # x_log=False,
             # y_log=False,
-            plot_name=f"fused-attention-batch{B}-head{H}-d{d}-{mode}-{dtype_str}",
+            plot_name=f"fused-attention-B{B}-B{H}-d{d}-{mode}-{dtype_str}",
             args={
                 "B": B,
                 "H": H,
