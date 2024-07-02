@@ -3,6 +3,7 @@ import re
 import torch
 import numpy as np
 import pandas as pd
+from bench import run_bench
 import matplotlib.pyplot as plt
 from tueplots.constants import markers
 from tueplots.constants.color import palettes
@@ -24,6 +25,9 @@ y_log = True
 N_MIN = 2**9
 N_MAX = 2**16
 
+run_bench_if_not_exists = True
+bench_overwrite_if_exists = False
+
 include_det = True
 include_indet = True
 
@@ -36,21 +40,37 @@ plt.rcParams.update(axes.lines())
 
 def get_bench_filename(B, H, d, mode, dtype) -> str:
     dtype_str = str(dtype).split('.')[1]
-    return f"{BENCH_DIR}/fused-attention-B{B}-B{H}-d{d}-{mode}-{dtype_str}.csv"
+    return f"{BENCH_DIR}/fused-attention-B{B}-H{H}-d{d}-{mode}-{dtype_str}.csv"
 
 
 def get_plot_filename(B, H, d, mode, dtype) -> str:
     dtype_str = str(dtype).split('.')[1]
     det_str = "-withdet" if include_det else ""
     log_str = "-ylog" if y_log else ""
-    return f"{PLOT_DIR}/plot-fused-attention-B{B}-B{H}-d{d}-{mode}-{dtype_str}{det_str}{log_str}.pdf"
+    return f"{PLOT_DIR}/plot-fused-attention-B{B}-H{H}-d{d}-{mode}-{dtype_str}{det_str}{log_str}.pdf"
 
 
-def get_bench_data(B, H, d, mode, dtype) -> pd.DataFrame:
-    df = pd.read_csv(
+def read_bench_csv(B, H, d, mode, dtype) -> pd.DataFrame:
+    return pd.read_csv(
             get_bench_filename(B, H, d, mode, dtype),
             sep=",",
             )
+
+
+def get_bench_data(B, H, d, mode, dtype) -> pd.DataFrame:
+    ran_bench = False
+    try:
+        if bench_overwrite_if_exists:
+            # Run bench regardless whether it exists or not
+            ran_bench = True
+            run_bench(B, H, d, [mode, ], dtype=dtype)
+        df = read_bench_csv(B, H, d, mode, dtype)
+    except FileNotFoundError as e:
+        if not ran_bench and run_bench_if_not_exists:
+            run_bench(B, H, d, [mode, ], dtype=dtype)
+            df = read_bench_csv(B, H, d, mode, dtype)
+        else:
+            raise e
     df['N'] = df['N'].astype(np.int32)
     df = df[df['N'] >= N_MIN]
     df = df[df['N'] <= N_MAX]
@@ -66,6 +86,8 @@ def plot_title(B, H, d, mode, dtype) -> str:
             dtype_str = "FP16"
         case torch.float32:
             dtype_str = "FP32"
+        case _:
+            raise ValueError(f"This dtype is not supported: {dtype}")
     return f"Attention {mode_str} (B={B}, H={H}, d={d}), {dtype_str}"
 
 
@@ -103,4 +125,6 @@ def plot_bench_data(B, H, d, mode, dtype):
         plt.legend()
         plt.savefig(get_plot_filename(B, H, d, mode, dtype))
 
-plot_bench_data(8, 8, 32, "fwd", torch.float16)
+
+if __name__ == "__main__":
+    plot_bench_data(B, H, d, mode, dtype)
