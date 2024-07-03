@@ -8,3 +8,7 @@
 
 # Python stuff
 __pycache__
+
+# Output/data directories created by scripts
+bench_out
+plots
