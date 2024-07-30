@@ -2,8 +2,8 @@
 
 ## About
 
-This repo contains an implementation of Flash Attention (in development: Flash
-Attention v1) in Triton, done for a project for the Deep Learning Research
+This repo contains an implementation of Flash Attention v2 in Triton,
+done for a project for the Deep Learning Research
 Kitchen (DLRS) seminar at the University of Tübingen.
 
 ## Installation/Setup
@@ -32,17 +32,8 @@ Kitchen (DLRS) seminar at the University of Tübingen.
 
 ## Plans
 
-- Forward pass:
-    - Change math stuff in inner loop to save some calculations
-        - Aka use the proper Flash Attention 2 inner loop
-- benchmark
-    - against other implementations, mainly, as of now,
-        torch's Attention implementation
-    - see if speedup is as expected
-    - compare with other Flash Attention implementations
-- implement backward pass
+- implement deterministic backward pass
     - WIP
-- write a torch module or function for this
 - Future:
     - implement dropout, masking, other functions etc. fused in the kernel.
 
@@ -51,7 +42,7 @@ Kitchen (DLRS) seminar at the University of Tübingen.
 
 - (Probably?) Only CUDA devices supported, memory requirements based off NVIDIA GA102 GPUs
     - I don't have other devices to develop/check for
-- Backwards pass (indeterministic version)
+- Backwards pass (not the deterministic version)
     - A bit fishy: If run the first time, results can be completely wrong,
         but after that, it works reliably.
         Need to check out what is going on there.
